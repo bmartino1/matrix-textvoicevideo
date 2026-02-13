@@ -2,7 +2,6 @@
 # matrix-textvoicevideo — Docker Compose Stack
 # Text · Voice · Video · WebRTC · 10-50 concurrent users
 ###############################################################################
-
 networks:
   matrix-net:
     driver: bridge
@@ -30,8 +29,13 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    # Security: no exposed ports — only reachable inside docker network
+#For Security Ports are removed nginx RP
+#    ports:
+#      - "5432:5432"
     shm_size: 256mb
+    labels:
+      net.unraid.docker.icon: https://cdn.jsdelivr.net/gh/selfhst/icons/png/postgresql.png
+      net.unraid.docker.managed: "composeman"
 
   #############################################
   # SYNAPSE — Matrix Homeserver
@@ -53,13 +57,19 @@ services:
     networks:
       - matrix-net
     restart: unless-stopped
+    labels:
+      net.unraid.docker.icon: https://cdn.jsdelivr.net/gh/selfhst/icons/png/matrix.png
+      net.unraid.docker.webui: http://[IP]:8008/_matrix/client/versions
+      net.unraid.docker.managed: "composeman"
     healthcheck:
       test: ["CMD", "curl", "-fSs", "http://localhost:8008/health"]
       interval: 15s
       timeout: 5s
       retries: 3
       start_period: 30s
-    # No exposed ports — nginx handles external access
+#For Security Ports are removed nginx RP
+#    ports:
+#      - "8008:8008"
 
   #############################################
   # LIVEKIT — WebRTC SFU (Voice/Video)
@@ -77,6 +87,13 @@ services:
     networks:
       - matrix-net
     restart: unless-stopped
+    labels:
+      net.unraid.docker.icon: https://pbs.twimg.com/profile_images/1791157444829380609/M6p5M6-A_400x400.png
+      net.unraid.docker.managed: "composeman"
+#For Security Ports are removed nginx RP
+#    ports:
+#      - "7880:7880/tcp"  # WebSocket
+#      - "7881:7881/udp"  # Media
 
   #############################################
   # COTURN — TURN/STUN relay for NAT traversal
@@ -85,9 +102,13 @@ services:
     image: coturn/coturn:latest
     container_name: matrix-coturn
     network_mode: host
+# Host mode required for proper UDP traversal
     volumes:
       - ${DATA_DIR}/coturn/config/turnserver.conf:/etc/coturn/turnserver.conf:ro
     restart: unless-stopped
+    labels:
+      net.unraid.docker.icon: https://raw.githubusercontent.com/xthursdayx/docker-templates/master/xthursdayx/images/webrtc-icon.png
+      net.unraid.docker.managed: "composeman"
 
   #############################################
   # ELEMENT WEB — Chat UI
@@ -100,7 +121,13 @@ services:
     networks:
       - matrix-net
     restart: unless-stopped
-    # No exposed ports — nginx handles access
+    labels:
+      net.unraid.docker.icon: https://cdn.jsdelivr.net/gh/selfhst/icons/png/element.png
+      net.unraid.docker.managed: "composeman"
+#      net.unraid.docker.webui: http://[IP]:8080
+#For Security Ports are removed nginx RP
+#    ports:
+#      - "8080:80"
 
   #############################################
   # ELEMENT CALL — Video/Voice Call UI
@@ -113,6 +140,13 @@ services:
     networks:
       - matrix-net
     restart: unless-stopped
+    labels:
+      net.unraid.docker.icon: https://cdn.jsdelivr.net/gh/selfhst/icons/png/element.png
+      net.unraid.docker.managed: "composeman"
+#      net.unraid.docker.webui: http://[IP]:8081
+#For Security Ports are removed nginx RP
+#    ports:
+#      - "8081:8080"
 
   #############################################
   # NGINX — Reverse Proxy + TLS Termination
@@ -125,8 +159,9 @@ services:
       - ${DATA_DIR}/nginx/html:/var/www/html:ro
       - ${DATA_DIR}/nginx/certs:/etc/nginx/certs:ro
     ports:
-      - "80:80"
-      - "443:443"
+      - "60080:80"
+      - "60443:443"
+#Use Router Nat Port Forwarding to forward Wan port 80 and wan port 443 to RP port 60080 and 60443
     depends_on:
       - synapse
       - element-web
@@ -135,6 +170,10 @@ services:
     networks:
       - matrix-net
     restart: unless-stopped
+    labels:
+      net.unraid.docker.icon: https://nginxproxymanager.com/icon.png
+#      net.unraid.docker.webui: http://FQDN-DOMAINNAME
+      net.unraid.docker.managed: "composeman"
 
   #############################################
   # CERTBOT — Auto TLS cert renewal (optional)
@@ -148,3 +187,6 @@ services:
       - ${DATA_DIR}/nginx/html:/var/www/certbot
     entrypoint: /bin/sh -c 'trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done'
     restart: unless-stopped
+    labels:
+      net.unraid.docker.icon: https://assets.streamlinehq.com/image/private/w_300,h_300,ar_1/f_auto/v1/icons/1/certbot-574tzyoqi931ecf7iyr3im.png/certbot-mfyukhw14u9ejx1eovu27.png
+      net.unraid.docker.managed: "composeman"
