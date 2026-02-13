@@ -1,4 +1,4 @@
-# Matrix-Discord — Self-Hosted Chat Server
+# matrix-textvoicevideo — Self-Hosted Chat Server
 
 A turnkey, Docker-based Matrix server stack providing Discord-like text, voice,
 and video chat. Supports 10-50 concurrent users in voice/video rooms.
