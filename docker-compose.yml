@@ -1,0 +1,150 @@
+###############################################################################
+# MATRIX-DISCORD — Docker Compose Stack
+# Text · Voice · Video · WebRTC · 10-50 concurrent users
+###############################################################################
+
+networks:
+  matrix-net:
+    driver: bridge
+
+services:
+
+  #############################################
+  # POSTGRES — Database (C locale for Synapse)
+  #############################################
+  postgres:
+    image: postgres:16-alpine
+    container_name: matrix-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_INITDB_ARGS: ${POSTGRES_INITDB_ARGS}
+    volumes:
+      - ${DATA_DIR}/postgres:/var/lib/postgresql/data
+    networks:
+      - matrix-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Security: no exposed ports — only reachable inside docker network
+    shm_size: 256mb
+
+  #############################################
+  # SYNAPSE — Matrix Homeserver
+  #############################################
+  synapse:
+    image: matrixdotorg/synapse:latest
+    container_name: matrix-synapse
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SYNAPSE_SERVER_NAME: ${SERVER_NAME}
+      SYNAPSE_REPORT_STATS: "no"
+      UID: "991"
+      GID: "991"
+    volumes:
+      - ${DATA_DIR}/synapse/appdata:/data
+      - ${DATA_DIR}/synapse/media_store:/data/media_store
+    networks:
+      - matrix-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fSs", "http://localhost:8008/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    # No exposed ports — nginx handles external access
+
+  #############################################
+  # LIVEKIT — WebRTC SFU (Voice/Video)
+  #############################################
+  livekit:
+    image: livekit/livekit-server:latest
+    container_name: matrix-livekit
+    command: ["--config", "/etc/livekit.yaml"]
+    volumes:
+      - ${DATA_DIR}/livekit/config/livekit.yaml:/etc/livekit.yaml:ro
+    ports:
+      # UDP media port range exposed on host
+      - "7881:7881/tcp"
+      - "50000-50200:50000-50200/udp"
+    networks:
+      - matrix-net
+    restart: unless-stopped
+
+  #############################################
+  # COTURN — TURN/STUN relay for NAT traversal
+  #############################################
+  coturn:
+    image: coturn/coturn:latest
+    container_name: matrix-coturn
+    network_mode: host
+    volumes:
+      - ${DATA_DIR}/coturn/config/turnserver.conf:/etc/coturn/turnserver.conf:ro
+    restart: unless-stopped
+
+  #############################################
+  # ELEMENT WEB — Chat UI
+  #############################################
+  element-web:
+    image: vectorim/element-web:latest
+    container_name: matrix-element-web
+    volumes:
+      - ${DATA_DIR}/element-web/config/config.json:/app/config.json:ro
+    networks:
+      - matrix-net
+    restart: unless-stopped
+    # No exposed ports — nginx handles access
+
+  #############################################
+  # ELEMENT CALL — Video/Voice Call UI
+  #############################################
+  element-call:
+    image: ghcr.io/element-hq/element-call:latest
+    container_name: matrix-element-call
+    volumes:
+      - ${DATA_DIR}/element-call/config/config.json:/app/config.json:ro
+    networks:
+      - matrix-net
+    restart: unless-stopped
+
+  #############################################
+  # NGINX — Reverse Proxy + TLS Termination
+  #############################################
+  nginx:
+    image: nginx:alpine
+    container_name: matrix-nginx
+    volumes:
+      - ${DATA_DIR}/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ${DATA_DIR}/nginx/html:/var/www/html:ro
+      - ${DATA_DIR}/nginx/certs:/etc/nginx/certs:ro
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - synapse
+      - element-web
+      - element-call
+      - livekit
+    networks:
+      - matrix-net
+    restart: unless-stopped
+
+  #############################################
+  # CERTBOT — Auto TLS cert renewal (optional)
+  #############################################
+  certbot:
+    image: certbot/certbot:latest
+    container_name: matrix-certbot
+    profiles: ["tls"]
+    volumes:
+      - ${DATA_DIR}/nginx/certs:/etc/letsencrypt
+      - ${DATA_DIR}/nginx/html:/var/www/certbot
+    entrypoint: /bin/sh -c 'trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done'
+    restart: unless-stopped
