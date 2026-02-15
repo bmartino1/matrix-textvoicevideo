@@ -204,7 +204,7 @@ services:
     container_name: matrix-coturn
     network_mode: host
     volumes:
-      - ${DATA_DIR}/coturn/config/turnserver.conf:/etc/coturn/turnserver.conf:ro
+      - ${DATA_DIR}/coturn/config/turnserver.conf:/etc/turnserver.conf:ro
     restart: unless-stopped
     labels:
       net.unraid.docker.icon: "https://raw.githubusercontent.com/xthursdayx/docker-templates/master/xthursdayx/images/webrtc-icon.png"
