@@ -145,7 +145,8 @@ services:
       - livekit
       - synapse
     environment:
-      LIVEKIT_JWT_PORT: "8080"
+#      LIVEKIT_JWT_PORT: "8080" #Depriacted for Bind...
+      LIVEKIT_JWT_BIND: "8080"
       LIVEKIT_URL: "${SCHEME}://${SERVER_NAME}/livekit/sfu"
       LIVEKIT_KEY: "${LIVEKIT_API_KEY}"
       LIVEKIT_SECRET: "${LIVEKIT_API_SECRET}"
