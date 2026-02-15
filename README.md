@@ -1,6 +1,6 @@
-# Matrix-TextVoiceVideo — Self-Hosted Discord Alternative
+# Matrix-TextVoiceVideo — Self-Hosted Text/Voice/Video Alternative
 
-A turnkey, Docker-based Matrix server stack providing Discord-like text, voice,
+A turnkey, Docker-based Matrix server stack providing a Discord-like text, voice,
 and video chat. Supports 10-50 concurrent users in voice/video rooms.
 
 ## Stack
