@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ###############################################################################
-#  matrix-textvoicevideo TURNKEY SETUP
+#  MATRIX-TEXTVOICEVIDEO — Turnkey Self-Hosted Discord Alternative
 #  Generates all secrets, configs, TLS, and launches the full stack.
 #  Usage:  sudo ./setup.sh --domain chat.example.com [--external-ip 1.2.3.4]
 #          sudo ./setup.sh --domain chat.example.com --no-tls   (LAN-only)
@@ -13,7 +13,7 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC
 banner() {
   echo -e "${CYAN}"
   echo "╔══════════════════════════════════════════════════════════════╗"
-  echo "║        matrix-textvoicevideo  ·  Turnkey Self-Hosted Chat         ║"
+  echo "║    MATRIX-TEXTVOICEVIDEO · Self-Hosted Discord Alternative  ║"
   echo "║   Text · Voice · Video · WebRTC · Secure by Default        ║"
   echo "╚══════════════════════════════════════════════════════════════╝"
   echo -e "${NC}"
@@ -73,13 +73,45 @@ PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DATA_DIR="$(realpath "$DATA_DIR" 2>/dev/null || echo "$PROJECT_DIR/data")"
 
 ###############################################################################
-# DETECT EXTERNAL IP
+# DETECT EXTERNAL IP  (multiple fallback services, JSON-safe)
 ###############################################################################
+detect_external_ip() {
+  local ip=""
+
+  # Try JSON API first (cleanest)
+  ip=$(curl -4 -sf --connect-timeout 5 --max-time 10 'https://api.ipify.org?format=json' 2>/dev/null \
+       | grep -oP '"ip"\s*:\s*"\K[0-9.]+' || true)
+
+  # Fallback: plain-text services
+  if [ -z "$ip" ]; then
+    ip=$(curl -4 -sf --connect-timeout 5 --max-time 10 https://ifconfig.me 2>/dev/null || true)
+  fi
+  if [ -z "$ip" ]; then
+    ip=$(curl -4 -sf --connect-timeout 5 --max-time 10 https://icanhazip.com 2>/dev/null | tr -d '[:space:]' || true)
+  fi
+  if [ -z "$ip" ]; then
+    ip=$(curl -4 -sf --connect-timeout 5 --max-time 10 https://ipecho.net/plain 2>/dev/null || true)
+  fi
+  if [ -z "$ip" ]; then
+    ip=$(curl -4 -sf --connect-timeout 5 --max-time 10 https://checkip.amazonaws.com 2>/dev/null | tr -d '[:space:]' || true)
+  fi
+
+  # Validate it looks like an IPv4 address
+  if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "$ip"
+  else
+    echo ""
+  fi
+}
+
 if [ -z "$EXTERNAL_IP" ]; then
   echo -e "${YELLOW}Detecting external IP...${NC}"
-  EXTERNAL_IP=$(curl -4 -s --connect-timeout 5 https://ifconfig.me || \
-                curl -4 -s --connect-timeout 5 https://icanhazip.com || \
-                hostname -I | awk '{print $1}')
+  EXTERNAL_IP=$(detect_external_ip)
+  if [ -z "$EXTERNAL_IP" ]; then
+    echo -e "${RED}ERROR: Could not auto-detect external IP.${NC}"
+    echo -e "${YELLOW}Please re-run with: --external-ip YOUR.PUBLIC.IP${NC}"
+    exit 1
+  fi
   echo -e "${GREEN}Detected: ${EXTERNAL_IP}${NC}"
 fi
 
@@ -117,7 +149,6 @@ TURN_SECRET="$(gen_secret 48)"
 LIVEKIT_API_KEY="API$(gen_hex 8)"
 LIVEKIT_API_SECRET="$(gen_secret 48)"
 JWT_SECRET="$(gen_secret 32)"
-ADMIN_TOKEN="$(gen_secret 64)"
 
 ###############################################################################
 # CREATE DIRECTORY STRUCTURE
@@ -126,7 +157,7 @@ echo -e "${CYAN}Creating directory structure...${NC}"
 
 mkdir -p "$DATA_DIR"/{postgres,synapse/{appdata,media_store},livekit/{config,appdata}}
 mkdir -p "$DATA_DIR"/{coturn/config,nginx/{conf.d,certs,html},element-web/config,element-call/config}
-mkdir -p "$DATA_DIR"/well-known
+mkdir -p "$DATA_DIR"/{well-known,valkey}
 mkdir -p "$PROJECT_DIR"/scripts
 
 ###############################################################################
@@ -135,17 +166,15 @@ mkdir -p "$PROJECT_DIR"/scripts
 if [ "$NO_TLS" = true ]; then
   SCHEME="http"
   PUBLIC_URL="${SCHEME}://${DOMAIN}"
-  NGINX_LISTEN_PORT="80"
   WS_SCHEME="ws"
 else
   SCHEME="https"
   PUBLIC_URL="${SCHEME}://${DOMAIN}"
-  NGINX_LISTEN_PORT="443 ssl"
   WS_SCHEME="wss"
 fi
 
 ###############################################################################
-# GENERATE .env FILE
+# GENERATE .env FILE  — ALL VALUES QUOTED TO PREVENT BASH INTERPRETATION
 ###############################################################################
 echo -e "${CYAN}Writing .env...${NC}"
 
@@ -156,41 +185,41 @@ cat > "$PROJECT_DIR/.env" <<ENVEOF
 ###############################################################################
 
 # IDENTITY — DO NOT CHANGE AFTER FIRST RUN
-SERVER_NAME=${DOMAIN}
-PUBLIC_URL=${PUBLIC_URL}
-SCHEME=${SCHEME}
+SERVER_NAME="${DOMAIN}"
+PUBLIC_URL="${PUBLIC_URL}"
+SCHEME="${SCHEME}"
 
 # NETWORK
-EXTERNAL_IP=${EXTERNAL_IP}
-INTERNAL_IP=${INTERNAL_IP}
+EXTERNAL_IP="${EXTERNAL_IP}"
+INTERNAL_IP="${INTERNAL_IP}"
 
 # POSTGRES
-POSTGRES_USER=synapse
-POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-POSTGRES_DB=synapse
-POSTGRES_INITDB_ARGS=--encoding=UTF8 --lc-collate=C --lc-ctype=C
+POSTGRES_USER="synapse"
+POSTGRES_PASSWORD="${POSTGRES_PASSWORD}"
+POSTGRES_DB="synapse"
+POSTGRES_INITDB_ARGS="--encoding=UTF8 --lc-collate=C --lc-ctype=C"
 
 # SYNAPSE SECRETS
-SYNAPSE_REGISTRATION_SECRET=${SYNAPSE_REGISTRATION_SECRET}
-SYNAPSE_MACAROON_KEY=${SYNAPSE_MACAROON_KEY}
-SYNAPSE_FORM_SECRET=${SYNAPSE_FORM_SECRET}
+SYNAPSE_REGISTRATION_SECRET="${SYNAPSE_REGISTRATION_SECRET}"
+SYNAPSE_MACAROON_KEY="${SYNAPSE_MACAROON_KEY}"
+SYNAPSE_FORM_SECRET="${SYNAPSE_FORM_SECRET}"
 
 # TURN / COTURN
-TURN_SECRET=${TURN_SECRET}
+TURN_SECRET="${TURN_SECRET}"
 
 # LIVEKIT
-LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
-LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
+LIVEKIT_API_KEY="${LIVEKIT_API_KEY}"
+LIVEKIT_API_SECRET="${LIVEKIT_API_SECRET}"
 
 # JWT (for LiveKit auth)
-JWT_SECRET=${JWT_SECRET}
+JWT_SECRET="${JWT_SECRET}"
 
 # TLS
-NO_TLS=${NO_TLS}
-ADMIN_EMAIL=${ADMIN_EMAIL}
+NO_TLS="${NO_TLS}"
+ADMIN_EMAIL="${ADMIN_EMAIL}"
 
 # PATHS
-DATA_DIR=${DATA_DIR}
+DATA_DIR="${DATA_DIR}"
 ENVEOF
 
 chmod 600 "$PROJECT_DIR/.env"
@@ -202,7 +231,7 @@ echo -e "${CYAN}Generating Synapse homeserver.yaml...${NC}"
 
 cat > "$DATA_DIR/synapse/appdata/homeserver.yaml" <<SYEOF
 ##################################################################
-# Synapse Homeserver — Auto-generated by matrix-textvoicevideo setup
+# Synapse Homeserver — Auto-generated by matrix-textvoicevideo
 ##################################################################
 
 server_name: "${DOMAIN}"
@@ -233,10 +262,18 @@ database:
     user: synapse
     password: "${POSTGRES_PASSWORD}"
     database: synapse
-    host: postgres
+    host: matrix-postgres
     port: 5432
     cp_min: 5
     cp_max: 10
+
+##################################################################
+# REDIS / VALKEY  — Required for worker coordination
+##################################################################
+redis:
+  enabled: true
+  host: matrix-valkey
+  port: 6379
 
 ##################################################################
 # LOGGING
@@ -426,30 +463,44 @@ cat > "$DATA_DIR/livekit/config/livekit.yaml" <<LKEOF
 # Tuned for 10-50 concurrent video/voice participants
 
 port: 7880
+bind_addresses:
+  - "0.0.0.0"
 
 rtc:
   tcp_port: 7881
   port_range_start: 50000
   port_range_end: 50200
   use_external_ip: true
-  # Enable TURN fallback for strict NATs
+  # Advertise public IP so remote clients can reach this SFU
+  node_ip: ${EXTERNAL_IP}
   enable_loopback_candidate: false
 
 keys:
   ${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}
 
 room:
-  # Max 50 participants per room
+  # Disable auto-create — lk-jwt-service manages room creation
+  auto_create: false
   max_participants: 50
   empty_timeout: 300
   departure_timeout: 20
+
+# Redis / Valkey for signaling coordination
+redis:
+  address: matrix-valkey:6379
+
+# TURN integration — use our Coturn server as fallback
+turn:
+  enabled: true
+  domain: ${DOMAIN}
+  tls_port: 5349
+  udp_port: 3478
+  external_tls: true
 
 # Logging
 logging:
   level: info
   pion_level: warn
-
-# Redis is optional for multi-node — omitted for single-server
 LKEOF
 
 ###############################################################################
@@ -474,9 +525,6 @@ cat > "$DATA_DIR/element-web/config/config.json" <<EWEOF
   },
   "show_labs_settings": false,
   "default_country_code": "US",
-  "jitsi": {
-    "preferred_domain": "${DOMAIN}"
-  },
   "element_call": {
     "url": "${PUBLIC_URL}/call",
     "participant_limit": 50,
@@ -495,7 +543,7 @@ cat > "$DATA_DIR/element-web/config/config.json" <<EWEOF
 EWEOF
 
 ###############################################################################
-# ELEMENT CALL CONFIG
+# ELEMENT CALL CONFIG  — points to lk-jwt-service via nginx
 ###############################################################################
 echo -e "${CYAN}Generating Element Call config...${NC}"
 
@@ -508,13 +556,13 @@ cat > "$DATA_DIR/element-call/config/config.json" <<ECEOF
     }
   },
   "livekit": {
-    "livekit_service_url": "${WS_SCHEME}://${DOMAIN}/livekit-ws"
+    "livekit_service_url": "${PUBLIC_URL}/livekit/jwt"
   }
 }
 ECEOF
 
 ###############################################################################
-# .well-known for Matrix delegation
+# .well-known for Matrix delegation + MatrixRTC SFU discovery (MSC4143)
 ###############################################################################
 echo -e "${CYAN}Generating .well-known files...${NC}"
 
@@ -530,7 +578,13 @@ cat > "$DATA_DIR/well-known/.well-known/matrix/client" <<WKCEOF
 {
   "m.homeserver": {
     "base_url": "${PUBLIC_URL}"
-  }
+  },
+  "org.matrix.msc4143.rtc_foci": [
+    {
+      "type": "livekit",
+      "livekit_service_url": "${PUBLIC_URL}/livekit/jwt"
+    }
+  ]
 }
 WKCEOF
 
@@ -571,17 +625,18 @@ http {
     proxy_send_timeout    600s;
     proxy_read_timeout    600s;
 
-    # Upstreams
-    upstream synapse    { server synapse:8008; }
-    upstream elementweb { server element-web:80; }
-    upstream elementcall { server element-call:8080; }
-    upstream livekit    { server livekit:7880; }
+    # Upstreams — using container names on the matrix-net bridge
+    upstream synapse      { server 172.42.0.3:8008; }
+    upstream elementweb   { server 172.42.0.4:80;   }
+    upstream elementcall  { server 172.42.0.5:8080;  }
+    upstream livekit_sfu  { server 172.42.0.6:7880;  }
+    upstream livekit_jwt  { server 172.42.0.8:8080;  }
 
     server {
         listen 80;
         server_name PLACEHOLDER_DOMAIN;
 
-        # .well-known for federation and client discovery
+        # .well-known for federation, client discovery, and MatrixRTC
         location /.well-known/matrix/ {
             root /var/www/html;
             default_type application/json;
@@ -599,6 +654,16 @@ http {
             proxy_set_header X-Forwarded-Proto $scheme;
         }
 
+        # Matrix Sync — long-poll needs extended timeout
+        location /_matrix/client/v3/sync {
+            proxy_pass http://synapse;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_read_timeout 600s;
+        }
+
         # Synapse admin API
         location /_synapse {
             proxy_pass http://synapse;
@@ -606,8 +671,7 @@ http {
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
-            # Restrict admin to localhost / private networks
-            # Uncomment below in production:
+            # Restrict admin to localhost / private networks in production:
             # allow 127.0.0.0/8;
             # allow 10.0.0.0/8;
             # allow 172.16.0.0/12;
@@ -615,7 +679,46 @@ http {
             # deny all;
         }
 
-        # Element Call
+        ###############################################################
+        # MATRIXRTC / LIVEKIT  (voice + video)
+        ###############################################################
+
+        # LiveKit JWT auth service (lk-jwt-service)
+        location ^~ /livekit/jwt/ {
+            proxy_pass http://livekit_jwt/;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+        # LiveKit SFU WebSocket + HTTP
+        location ^~ /livekit/sfu/ {
+            proxy_pass http://livekit_sfu/;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_read_timeout 3600s;
+            proxy_send_timeout 3600s;
+            proxy_buffering off;
+        }
+
+        # Legacy /sfu/get endpoint (older Element Call clients)
+        location /sfu/get {
+            proxy_pass http://livekit_jwt/sfu/get;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+        ###############################################################
+        # ELEMENT CALL
+        ###############################################################
         location /call {
             proxy_pass http://elementcall;
             proxy_set_header Host $host;
@@ -628,29 +731,9 @@ http {
             proxy_set_header Host $host;
         }
 
-        # LiveKit WebSocket
-        location /livekit-ws {
-            proxy_pass http://livekit;
-            proxy_http_version 1.1;
-            proxy_set_header Upgrade $http_upgrade;
-            proxy_set_header Connection "upgrade";
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_read_timeout 3600s;
-            proxy_send_timeout 3600s;
-        }
-
-        # Matrix Sync — long-poll needs extended timeout
-        location /_matrix/client/v3/sync {
-            proxy_pass http://synapse;
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto $scheme;
-            proxy_read_timeout 600s;
-        }
-
-        # Element Web (default)
+        ###############################################################
+        # ELEMENT WEB (default)
+        ###############################################################
         location / {
             proxy_pass http://elementweb;
             proxy_set_header Host $host;
@@ -702,12 +785,14 @@ http {
     proxy_send_timeout    600s;
     proxy_read_timeout    600s;
 
-    upstream synapse     { server synapse:8008; }
-    upstream elementweb  { server element-web:80; }
-    upstream elementcall { server element-call:8080; }
-    upstream livekit     { server livekit:7880; }
+    # Upstreams — using static IPs on the matrix-net bridge
+    upstream synapse      { server 172.42.0.3:8008; }
+    upstream elementweb   { server 172.42.0.4:80;   }
+    upstream elementcall  { server 172.42.0.5:8080;  }
+    upstream livekit_sfu  { server 172.42.0.6:7880;  }
+    upstream livekit_jwt  { server 172.42.0.8:8080;  }
 
-    # HTTP → HTTPS redirect
+    # HTTP → HTTPS redirect + ACME challenge
     server {
         listen 80;
         server_name PLACEHOLDER_DOMAIN;
@@ -728,7 +813,7 @@ http {
         ssl_certificate     /etc/nginx/certs/live/PLACEHOLDER_DOMAIN/fullchain.pem;
         ssl_certificate_key /etc/nginx/certs/live/PLACEHOLDER_DOMAIN/privkey.pem;
 
-        # .well-known
+        # .well-known for federation, client discovery, and MatrixRTC
         location /.well-known/matrix/ {
             root /var/www/html;
             default_type application/json;
@@ -737,6 +822,7 @@ http {
             add_header Access-Control-Allow-Headers "Origin, X-Requested-With, Content-Type, Accept, Authorization" always;
         }
 
+        # Matrix Client + Federation API
         location /_matrix {
             proxy_pass http://synapse;
             proxy_set_header Host $host;
@@ -745,34 +831,7 @@ http {
             proxy_set_header X-Forwarded-Proto $scheme;
         }
 
-        location /_synapse {
-            proxy_pass http://synapse;
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto $scheme;
-        }
-
-        location /call {
-            proxy_pass http://elementcall;
-            proxy_set_header Host $host;
-        }
-
-        location /call/ {
-            proxy_pass http://elementcall/;
-            proxy_set_header Host $host;
-        }
-
-        location /livekit-ws {
-            proxy_pass http://livekit;
-            proxy_http_version 1.1;
-            proxy_set_header Upgrade $http_upgrade;
-            proxy_set_header Connection "upgrade";
-            proxy_set_header Host $host;
-            proxy_read_timeout 3600s;
-            proxy_send_timeout 3600s;
-        }
-
+        # Matrix Sync — long-poll needs extended timeout
         location /_matrix/client/v3/sync {
             proxy_pass http://synapse;
             proxy_set_header Host $host;
@@ -782,6 +841,70 @@ http {
             proxy_read_timeout 600s;
         }
 
+        # Synapse admin API
+        location /_synapse {
+            proxy_pass http://synapse;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+        ###############################################################
+        # MATRIXRTC / LIVEKIT  (voice + video)
+        ###############################################################
+
+        # LiveKit JWT auth service (lk-jwt-service)
+        location ^~ /livekit/jwt/ {
+            proxy_pass http://livekit_jwt/;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+        # LiveKit SFU WebSocket + HTTP
+        location ^~ /livekit/sfu/ {
+            proxy_pass http://livekit_sfu/;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_read_timeout 3600s;
+            proxy_send_timeout 3600s;
+            proxy_buffering off;
+        }
+
+        # Legacy /sfu/get endpoint (older Element Call clients)
+        location /sfu/get {
+            proxy_pass http://livekit_jwt/sfu/get;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+        ###############################################################
+        # ELEMENT CALL
+        ###############################################################
+        location /call {
+            proxy_pass http://elementcall;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        }
+
+        location /call/ {
+            proxy_pass http://elementcall/;
+            proxy_set_header Host $host;
+        }
+
+        ###############################################################
+        # ELEMENT WEB (default)
+        ###############################################################
         location / {
             proxy_pass http://elementweb;
             proxy_set_header Host $host;
@@ -810,25 +933,63 @@ HTMLEOF
 cp -r "$DATA_DIR/well-known/.well-known" "$DATA_DIR/nginx/html/"
 
 ###############################################################################
-# DOCKER COMPOSE
+# DOCKER COMPOSE — Static IPs, Unraid labels, Valkey, lk-jwt-service
 ###############################################################################
 echo -e "${CYAN}Generating docker-compose.yml...${NC}"
 
 cat > "$PROJECT_DIR/docker-compose.yml" <<'DCEOF'
 ###############################################################################
-# matrix-textvoicevideo — Docker Compose Stack
+# MATRIX-TEXTVOICEVIDEO — Docker Compose Stack
+# Self-Hosted Discord Alternative
 # Text · Voice · Video · WebRTC · 10-50 concurrent users
+#
+# Service IPs (matrix-net 172.42.0.0/24):
+#   postgres     172.42.0.2
+#   synapse      172.42.0.3
+#   element-web  172.42.0.4
+#   element-call 172.42.0.5
+#   livekit      172.42.0.6
+#   valkey       172.42.0.7
+#   lk-jwt-svc   172.42.0.8
+#   nginx        172.42.0.10
 ###############################################################################
 
 networks:
   matrix-net:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.42.0.0/24
 
 services:
 
-  #############################################
+  ###########################################################################
+  # VALKEY (Redis replacement) — Synapse + LiveKit coordination
+  ###########################################################################
+  valkey:
+    image: valkey/valkey:latest
+    container_name: matrix-valkey
+    command: ["valkey-server", "--appendonly", "yes"]
+    volumes:
+      - ${DATA_DIR}/valkey:/data
+    networks:
+      matrix-net:
+        ipv4_address: 172.42.0.7
+    # ports:
+    #   - "6379:6379"          # Uncomment for debug only
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    labels:
+      net.unraid.docker.icon: "https://raw.githubusercontent.com/SnuK87/unraid-templates/refs/heads/main/icons/valkey-logo.png"
+      net.unraid.docker.managed: "composeman"
+
+  ###########################################################################
   # POSTGRES — Database (C locale for Synapse)
-  #############################################
+  ###########################################################################
   postgres:
     image: postgres:16-alpine
     container_name: matrix-postgres
@@ -840,35 +1001,43 @@ services:
     volumes:
       - ${DATA_DIR}/postgres:/var/lib/postgresql/data
     networks:
-      - matrix-net
+      matrix-net:
+        ipv4_address: 172.42.0.2
+    # ports:
+    #   - "5432:5432"          # Uncomment for debug only
     restart: unless-stopped
+    shm_size: 256mb
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 5
-    # Security: no exposed ports — only reachable inside docker network
-    shm_size: 256mb
+    labels:
+      net.unraid.docker.icon: "https://cdn.jsdelivr.net/gh/selfhst/icons/png/postgresql.png"
+      net.unraid.docker.managed: "composeman"
 
-  #############################################
+  ###########################################################################
   # SYNAPSE — Matrix Homeserver
-  #############################################
+  ###########################################################################
   synapse:
     image: matrixdotorg/synapse:latest
     container_name: matrix-synapse
     depends_on:
       postgres:
         condition: service_healthy
+      valkey:
+        condition: service_healthy
     environment:
       SYNAPSE_SERVER_NAME: ${SERVER_NAME}
       SYNAPSE_REPORT_STATS: "no"
-      UID: "991"
-      GID: "991"
     volumes:
       - ${DATA_DIR}/synapse/appdata:/data
       - ${DATA_DIR}/synapse/media_store:/data/media_store
     networks:
-      - matrix-net
+      matrix-net:
+        ipv4_address: 172.42.0.3
+    # ports:
+    #   - "8008:8008"          # Uncomment for debug only
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-fSs", "http://localhost:8008/health"]
@@ -876,28 +1045,100 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
-    # No exposed ports — nginx handles external access
+    labels:
+      net.unraid.docker.icon: "https://cdn.jsdelivr.net/gh/selfhst/icons/png/matrix.png"
+      net.unraid.docker.webui: "http://[IP]:8008/_matrix/client/versions"
+      net.unraid.docker.managed: "composeman"
 
-  #############################################
+  ###########################################################################
   # LIVEKIT — WebRTC SFU (Voice/Video)
-  #############################################
+  ###########################################################################
   livekit:
     image: livekit/livekit-server:latest
     container_name: matrix-livekit
-    command: ["--config", "/etc/livekit.yaml"]
+    command: ["--config", "/etc/livekit.yaml", "--node-ip", "${EXTERNAL_IP}"]
+    depends_on:
+      valkey:
+        condition: service_healthy
     volumes:
       - ${DATA_DIR}/livekit/config/livekit.yaml:/etc/livekit.yaml:ro
+    networks:
+      matrix-net:
+        ipv4_address: 172.42.0.6
     ports:
-      # UDP media port range exposed on host
+      # These MUST be exposed — WebRTC media traffic
       - "7881:7881/tcp"
       - "50000-50200:50000-50200/udp"
-    networks:
-      - matrix-net
+      # - "7880:7880/tcp"     # Uncomment for debug only (SFU HTTP/WS)
     restart: unless-stopped
+    labels:
+      net.unraid.docker.icon: "https://pbs.twimg.com/profile_images/1791157444829380609/M6p5M6-A_400x400.png"
+      net.unraid.docker.managed: "composeman"
 
-  #############################################
-  # COTURN — TURN/STUN relay for NAT traversal
-  #############################################
+  ###########################################################################
+  # LK-JWT-SERVICE — MatrixRTC Authorization (LiveKit JWT tokens)
+  ###########################################################################
+  lk-jwt-service:
+    image: ghcr.io/element-hq/lk-jwt-service:latest
+    container_name: matrix-lk-jwt
+    depends_on:
+      - livekit
+      - synapse
+    environment:
+      LIVEKIT_JWT_PORT: "8080"
+      LIVEKIT_URL: "${SCHEME}://${SERVER_NAME}/livekit/sfu"
+      LIVEKIT_KEY: "${LIVEKIT_API_KEY}"
+      LIVEKIT_SECRET: "${LIVEKIT_API_SECRET}"
+      LIVEKIT_FULL_ACCESS_HOMESERVERS: "${SERVER_NAME}"
+    networks:
+      matrix-net:
+        ipv4_address: 172.42.0.8
+    # ports:
+    #   - "8090:8080"          # Uncomment for debug only
+    restart: unless-stopped
+    labels:
+      net.unraid.docker.icon: "https://cdn.jsdelivr.net/gh/selfhst/icons/png/element.png"
+      net.unraid.docker.managed: "composeman"
+
+  ###########################################################################
+  # ELEMENT WEB — Chat UI (like Discord)
+  ###########################################################################
+  element-web:
+    image: vectorim/element-web:latest
+    container_name: matrix-element-web
+    volumes:
+      - ${DATA_DIR}/element-web/config/config.json:/app/config.json:ro
+    networks:
+      matrix-net:
+        ipv4_address: 172.42.0.4
+    # ports:
+    #   - "8080:80"            # Uncomment for debug only
+    restart: unless-stopped
+    labels:
+      net.unraid.docker.icon: "https://cdn.jsdelivr.net/gh/selfhst/icons/png/element.png"
+      net.unraid.docker.managed: "composeman"
+
+  ###########################################################################
+  # ELEMENT CALL — Video/Voice Call UI
+  ###########################################################################
+  element-call:
+    image: ghcr.io/element-hq/element-call:latest
+    container_name: matrix-element-call
+    volumes:
+      - ${DATA_DIR}/element-call/config/config.json:/app/config.json:ro
+    networks:
+      matrix-net:
+        ipv4_address: 172.42.0.5
+    # ports:
+    #   - "8082:8080"          # Uncomment for debug only
+    restart: unless-stopped
+    labels:
+      net.unraid.docker.icon: "https://cdn.jsdelivr.net/gh/selfhst/icons/png/element.png"
+      net.unraid.docker.managed: "composeman"
+
+  ###########################################################################
+  # COTURN — TURN/STUN relay for NAT traversal (host networking required)
+  ###########################################################################
   coturn:
     image: coturn/coturn:latest
     container_name: matrix-coturn
@@ -905,35 +1146,13 @@ services:
     volumes:
       - ${DATA_DIR}/coturn/config/turnserver.conf:/etc/coturn/turnserver.conf:ro
     restart: unless-stopped
+    labels:
+      net.unraid.docker.icon: "https://raw.githubusercontent.com/xthursdayx/docker-templates/master/xthursdayx/images/webrtc-icon.png"
+      net.unraid.docker.managed: "composeman"
 
-  #############################################
-  # ELEMENT WEB — Chat UI
-  #############################################
-  element-web:
-    image: vectorim/element-web:latest
-    container_name: matrix-element-web
-    volumes:
-      - ${DATA_DIR}/element-web/config/config.json:/app/config.json:ro
-    networks:
-      - matrix-net
-    restart: unless-stopped
-    # No exposed ports — nginx handles access
-
-  #############################################
-  # ELEMENT CALL — Video/Voice Call UI
-  #############################################
-  element-call:
-    image: ghcr.io/element-hq/element-call:latest
-    container_name: matrix-element-call
-    volumes:
-      - ${DATA_DIR}/element-call/config/config.json:/app/config.json:ro
-    networks:
-      - matrix-net
-    restart: unless-stopped
-
-  #############################################
+  ###########################################################################
   # NGINX — Reverse Proxy + TLS Termination
-  #############################################
+  ###########################################################################
   nginx:
     image: nginx:alpine
     container_name: matrix-nginx
@@ -941,21 +1160,27 @@ services:
       - ${DATA_DIR}/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ${DATA_DIR}/nginx/html:/var/www/html:ro
       - ${DATA_DIR}/nginx/certs:/etc/nginx/certs:ro
+    networks:
+      matrix-net:
+        ipv4_address: 172.42.0.10
     ports:
-      - "80:80"
-      - "443:443"
+      - "60080:80"
+      - "60443:443"
     depends_on:
       - synapse
       - element-web
       - element-call
       - livekit
-    networks:
-      - matrix-net
+      - lk-jwt-service
     restart: unless-stopped
+    labels:
+      net.unraid.docker.icon: "https://nginxproxymanager.com/icon.png"
+      net.unraid.docker.webui: "http://[IP]:60080"
+      net.unraid.docker.managed: "composeman"
 
-  #############################################
-  # CERTBOT — Auto TLS cert renewal (optional)
-  #############################################
+  ###########################################################################
+  # CERTBOT — Auto TLS cert renewal (optional, activate with tls profile)
+  ###########################################################################
   certbot:
     image: certbot/certbot:latest
     container_name: matrix-certbot
@@ -965,6 +1190,9 @@ services:
       - ${DATA_DIR}/nginx/html:/var/www/certbot
     entrypoint: /bin/sh -c 'trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done'
     restart: unless-stopped
+    labels:
+      net.unraid.docker.icon: "https://cdn.jsdelivr.net/gh/selfhst/icons/png/lets-encrypt.png"
+      net.unraid.docker.managed: "composeman"
 DCEOF
 
 ###############################################################################
@@ -974,7 +1202,6 @@ if [ "$NO_TLS" = false ]; then
   echo -e "${CYAN}Bootstrapping TLS certificates with Let's Encrypt...${NC}"
   echo -e "${YELLOW}(Requires ports 80/443 open and DNS pointing to this server)${NC}"
 
-  # Create a minimal nginx for the ACME challenge
   mkdir -p "$DATA_DIR/nginx/certs"
 
   # Write temp bootstrap nginx config
@@ -1035,12 +1262,44 @@ chown -R 991:991 "$DATA_DIR/synapse" 2>/dev/null || true
 ###############################################################################
 echo -e "${CYAN}Generating admin scripts...${NC}"
 
-# --- create-user.sh ---
+# ─── Helper: safe .env loader (sourced by all admin scripts) ───
+cat > "$PROJECT_DIR/scripts/load-env.sh" <<'LOADEOF'
+#!/usr/bin/env bash
+# Safe .env loader — reads key=value pairs even if values contain spaces.
+# Usage:  source "$(dirname "$0")/load-env.sh"
+
+_ENV_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.env"
+if [ ! -f "$_ENV_FILE" ]; then
+  echo "ERROR: .env not found at $_ENV_FILE" >&2
+  echo "       Run setup.sh first to generate it." >&2
+  exit 1
+fi
+
+# Read each non-comment, non-empty line and export it safely
+while IFS= read -r line || [ -n "$line" ]; do
+  # Skip blanks and comments
+  [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+  # Strip surrounding quotes from the value
+  key="${line%%=*}"
+  val="${line#*=}"
+  # Remove leading/trailing double-quotes if present
+  val="${val#\"}"
+  val="${val%\"}"
+  # Remove leading/trailing single-quotes if present
+  val="${val#\'}"
+  val="${val%\'}"
+  export "$key=$val"
+done < "$_ENV_FILE"
+
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+LOADEOF
+
+# ─── create-user.sh ───
 cat > "$PROJECT_DIR/scripts/create-user.sh" <<'USREOF'
 #!/usr/bin/env bash
 set -euo pipefail
 # Usage: ./scripts/create-user.sh <username> [--admin]
-source "$(dirname "$0")/../.env"
+source "$(dirname "$0")/load-env.sh"
 
 USERNAME="${1:?Usage: $0 <username> [--admin]}"
 ADMIN_FLAG=""
@@ -1063,14 +1322,15 @@ echo ""
 echo "✓ User @${USERNAME}:${SERVER_NAME} created."
 USREOF
 
-# --- reset-password.sh ---
+# ─── reset-password.sh ───
 cat > "$PROJECT_DIR/scripts/reset-password.sh" <<'RPEOF'
 #!/usr/bin/env bash
 set -euo pipefail
-# Usage: ./scripts/reset-password.sh <username>
-source "$(dirname "$0")/../.env"
+# Usage: ./scripts/reset-password.sh <username> <admin-token>
+source "$(dirname "$0")/load-env.sh"
 
-USERNAME="${1:?Usage: $0 <username>}"
+USERNAME="${1:?Usage: $0 <username> <admin-token>}"
+TOKEN="${2:?Usage: $0 <username> <admin-token>}"
 USER_ID="@${USERNAME}:${SERVER_NAME}"
 
 read -s -p "New password for ${USER_ID}: " PASSWORD
@@ -1079,47 +1339,29 @@ read -s -p "Confirm: " PASSWORD2
 echo ""
 if [ "$PASSWORD" != "$PASSWORD2" ]; then echo "Passwords don't match!"; exit 1; fi
 
-# Get an admin access token via shared secret
-NONCE=$(curl -s http://localhost:8008/_synapse/admin/v1/register | python3 -c "import sys,json; print(json.load(sys.stdin)['nonce'])")
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d "{\"new_password\": \"${PASSWORD}\", \"logout_devices\": true}" \
+  "http://localhost:8008/_synapse/admin/v1/reset_password/${USER_ID}")
 
-# Use the admin API
-docker exec matrix-synapse python3 -c "
-import hmac, hashlib, json, urllib.request
-
-nonce = '${NONCE}'
-shared_secret = '${SYNAPSE_REGISTRATION_SECRET}'
-
-# Reset via hash_password and admin API
-pw_hash = hmac.new(shared_secret.encode(), '${PASSWORD}'.encode(), hashlib.sha256).hexdigest()
-data = json.dumps({'new_password': '${PASSWORD}', 'logout_devices': True}).encode()
-req = urllib.request.Request(
-    'http://localhost:8008/_synapse/admin/v1/reset_password/${USER_ID}',
-    data=data,
-    headers={'Content-Type': 'application/json'},
-    method='POST'
-)
-# This requires an admin token; generate one first
-print('Note: Password reset requires an admin access token.')
-print('Use Element Web to log in as admin, get token from Settings > Help > Access Token')
-" 2>/dev/null || true
-
-echo ""
-echo "To reset a password, log into Element Web as an admin user."
-echo "Then use Settings → Help & About → Access Token to get a token."
-echo "Then run:"
-echo "  curl -X POST -d '{\"new_password\": \"NEW_PASS\", \"logout_devices\": true}' \\"
-echo "    -H 'Content-Type: application/json' \\"
-echo "    -H 'Authorization: Bearer YOUR_TOKEN' \\"
-echo "    http://localhost:8008/_synapse/admin/v1/reset_password/${USER_ID}"
+if [ "$HTTP_CODE" = "200" ]; then
+  echo "✓ Password reset for ${USER_ID}."
+else
+  echo "✗ Failed (HTTP ${HTTP_CODE}). Verify your admin token is valid."
+  echo ""
+  echo "To get an admin token, log into Element Web as an admin user,"
+  echo "then go to Settings → Help & About → Access Token."
+fi
 RPEOF
 
-# --- list-users.sh ---
+# ─── list-users.sh ───
 cat > "$PROJECT_DIR/scripts/list-users.sh" <<'LUEOF'
 #!/usr/bin/env bash
 set -euo pipefail
 # Lists all registered users (requires admin token)
 # Usage: ./scripts/list-users.sh <admin-token>
-source "$(dirname "$0")/../.env"
+source "$(dirname "$0")/load-env.sh"
 
 TOKEN="${1:?Usage: $0 <admin-access-token>}"
 
@@ -1128,34 +1370,43 @@ curl -s -H "Authorization: Bearer ${TOKEN}" \
   python3 -c "
 import sys, json
 data = json.load(sys.stdin)
-for u in data.get('users', []):
-    admin = '(admin)' if u.get('admin') else ''
-    print(f\"  {u['name']} {admin}\")
+users = data.get('users', [])
+if not users:
+    print('  No users found (or invalid token).')
+else:
+    for u in users:
+        admin = '(admin)' if u.get('admin') else ''
+        print(f\"  {u['name']} {admin}\")
+    print(f\"\n  Total: {len(users)} users\")
 "
 LUEOF
 
-# --- deactivate-user.sh ---
+# ─── deactivate-user.sh ───
 cat > "$PROJECT_DIR/scripts/deactivate-user.sh" <<'DUEOF'
 #!/usr/bin/env bash
 set -euo pipefail
 # Usage: ./scripts/deactivate-user.sh <username> <admin-token>
-source "$(dirname "$0")/../.env"
+source "$(dirname "$0")/load-env.sh"
 
 USERNAME="${1:?Usage: $0 <username> <admin-token>}"
 TOKEN="${2:?Usage: $0 <username> <admin-token>}"
 USER_ID="@${USERNAME}:${SERVER_NAME}"
 
 echo "Deactivating ${USER_ID}..."
-curl -s -X POST \
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
   -H "Authorization: Bearer ${TOKEN}" \
   -H "Content-Type: application/json" \
   -d '{"erase": false}' \
-  "http://localhost:8008/_synapse/admin/v1/deactivate/${USER_ID}"
-echo ""
-echo "✓ User deactivated."
+  "http://localhost:8008/_synapse/admin/v1/deactivate/${USER_ID}")
+
+if [ "$HTTP_CODE" = "200" ]; then
+  echo "✓ User ${USER_ID} deactivated."
+else
+  echo "✗ Failed (HTTP ${HTTP_CODE}). Verify your admin token and username."
+fi
 DUEOF
 
-# --- rotate-secrets.sh ---
+# ─── rotate-secrets.sh ───
 cat > "$PROJECT_DIR/scripts/rotate-secrets.sh" <<'RSEOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -1164,28 +1415,30 @@ echo "This will rotate TURN and LiveKit secrets and restart services."
 read -p "Continue? (y/N): " confirm
 if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then exit 0; fi
 
-PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-source "$PROJECT_DIR/.env"
+source "$(dirname "$0")/load-env.sh"
 
 NEW_TURN="$(openssl rand -base64 48 | tr -d '/+=\n' | head -c 48)"
 NEW_LK_SECRET="$(openssl rand -base64 48 | tr -d '/+=\n' | head -c 48)"
 
-# Update .env
-sed -i "s/^TURN_SECRET=.*/TURN_SECRET=${NEW_TURN}/" "$PROJECT_DIR/.env"
-sed -i "s/^LIVEKIT_API_SECRET=.*/LIVEKIT_API_SECRET=${NEW_LK_SECRET}/" "$PROJECT_DIR/.env"
+# Update .env (handles quoted values)
+sed -i "s|^TURN_SECRET=.*|TURN_SECRET=\"${NEW_TURN}\"|" "$PROJECT_DIR/.env"
+sed -i "s|^LIVEKIT_API_SECRET=.*|LIVEKIT_API_SECRET=\"${NEW_LK_SECRET}\"|" "$PROJECT_DIR/.env"
 
-# Re-run setup to regenerate configs
-echo "Secrets rotated in .env. Run setup.sh again to regenerate configs, then restart:"
-echo "  docker compose down && docker compose up -d"
+echo "✓ Secrets rotated in .env."
+echo ""
+echo "IMPORTANT: You must regenerate configs and restart:"
+echo "  1. Re-run:  sudo ./setup.sh --domain ${SERVER_NAME}"
+echo "  2. Then:    docker compose down && docker compose up -d"
 RSEOF
 
-# --- backup.sh ---
+# ─── backup.sh ───
 cat > "$PROJECT_DIR/scripts/backup.sh" <<'BKEOF'
 #!/usr/bin/env bash
 set -euo pipefail
 # Creates a full backup of the Matrix server
-source "$(dirname "$0")/../.env"
-BACKUP_DIR="${1:-./backups/$(date +%Y%m%d_%H%M%S)}"
+source "$(dirname "$0")/load-env.sh"
+
+BACKUP_DIR="${1:-${PROJECT_DIR}/backups/$(date +%Y%m%d_%H%M%S)}"
 mkdir -p "$BACKUP_DIR"
 
 echo "Backing up PostgreSQL..."
@@ -1193,8 +1446,8 @@ docker exec matrix-postgres pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" > "$BACKU
 
 echo "Backing up configs..."
 cp "$DATA_DIR/synapse/appdata/homeserver.yaml" "$BACKUP_DIR/"
-cp -r "$DATA_DIR/synapse/appdata/"*.signing.key "$BACKUP_DIR/" 2>/dev/null || true
-cp "$(dirname "$0")/../.env" "$BACKUP_DIR/"
+cp "$DATA_DIR/synapse/appdata/"*.signing.key "$BACKUP_DIR/" 2>/dev/null || true
+cp "$PROJECT_DIR/.env" "$BACKUP_DIR/"
 
 echo "Backing up media..."
 tar -czf "$BACKUP_DIR/media_store.tar.gz" -C "$DATA_DIR/synapse" media_store 2>/dev/null || true
@@ -1203,17 +1456,18 @@ echo "✓ Backup complete: $BACKUP_DIR"
 ls -lh "$BACKUP_DIR/"
 BKEOF
 
-# --- status.sh ---
+# ─── status.sh ───
 cat > "$PROJECT_DIR/scripts/status.sh" <<'STEOF'
 #!/usr/bin/env bash
 set -euo pipefail
 # Shows the status of all services
+
 echo "=== Container Status ==="
-docker compose ps 2>/dev/null || docker-compose ps
+docker compose ps 2>/dev/null || docker-compose ps 2>/dev/null || echo "(docker compose not available)"
 
 echo ""
 echo "=== Service Health ==="
-source "$(dirname "$0")/../.env"
+source "$(dirname "$0")/load-env.sh"
 
 check() {
   local name="$1" url="$2"
@@ -1224,9 +1478,19 @@ check() {
   fi
 }
 
-check "Synapse API"    "http://localhost:8008/_matrix/client/versions"
-check "Element Web"    "http://localhost:80"
-check "LiveKit"        "http://localhost:7880"
+check "Synapse API"       "http://172.42.0.3:8008/_matrix/client/versions"
+check "Element Web"       "http://172.42.0.4:80"
+check "Element Call"      "http://172.42.0.5:8080"
+check "LiveKit SFU"       "http://172.42.0.6:7880"
+check "LK-JWT-Service"    "http://172.42.0.8:8080/healthz"
+check "Nginx (HTTP)"      "http://172.42.0.10:80"
+
+echo ""
+echo "=== External Endpoints ==="
+check "Public HTTPS"      "${PUBLIC_URL}/_matrix/client/versions"
+check "Well-Known Client" "${PUBLIC_URL}/.well-known/matrix/client"
+check "LiveKit JWT Health" "${PUBLIC_URL}/livekit/jwt/healthz"
+
 echo ""
 echo "=== Resource Usage ==="
 docker stats --no-stream --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}" 2>/dev/null | head -20
@@ -1235,41 +1499,81 @@ STEOF
 chmod +x "$PROJECT_DIR"/scripts/*.sh
 
 ###############################################################################
+# GENERATE MAKEFILE
+###############################################################################
+cat > "$PROJECT_DIR/Makefile" <<'MKEOF'
+.PHONY: up down restart logs status create-user backup ps
+
+up:
+	docker compose up -d
+
+down:
+	docker compose down
+
+restart:
+	docker compose down && docker compose up -d
+
+logs:
+	docker compose logs -f --tail=100
+
+status:
+	./scripts/status.sh
+
+create-user:
+	@read -p "Username: " user; ./scripts/create-user.sh $$user
+
+create-admin:
+	@read -p "Username: " user; ./scripts/create-user.sh $$user --admin
+
+backup:
+	./scripts/backup.sh
+
+ps:
+	docker compose ps
+MKEOF
+
+###############################################################################
 # GENERATE README
 ###############################################################################
 cat > "$PROJECT_DIR/README.md" <<'READMEEOF'
-# matrix-textvoicevideo — Self-Hosted Chat Server
+# Matrix-TextVoiceVideo — Self-Hosted Discord Alternative
 
 A turnkey, Docker-based Matrix server stack providing Discord-like text, voice,
 and video chat. Supports 10-50 concurrent users in voice/video rooms.
 
 ## Stack
 
-| Service       | Purpose                          | Image                              |
-|---------------|----------------------------------|------------------------------------|
-| **Synapse**   | Matrix homeserver                | matrixdotorg/synapse               |
-| **PostgreSQL**| Database (C locale)              | postgres:16-alpine                 |
-| **Element Web**| Chat UI (like Discord)          | vectorim/element-web               |
-| **Element Call**| Video/Voice UI                 | ghcr.io/element-hq/element-call    |
-| **LiveKit**   | WebRTC SFU (group video/voice)   | livekit/livekit-server             |
-| **Coturn**    | TURN/STUN relay (NAT traversal)  | coturn/coturn                      |
-| **Nginx**     | Reverse proxy + TLS              | nginx:alpine                       |
-| **Certbot**   | Auto TLS renewal                 | certbot/certbot                    |
+| Service            | Purpose                          | Image                                | IP           |
+|--------------------|----------------------------------|--------------------------------------|--------------|
+| **Synapse**        | Matrix homeserver                | `matrixdotorg/synapse`               | 172.42.0.3   |
+| **PostgreSQL**     | Database (C locale)              | `postgres:16-alpine`                 | 172.42.0.2   |
+| **Element Web**    | Chat UI (like Discord)           | `vectorim/element-web`               | 172.42.0.4   |
+| **Element Call**   | Video/Voice UI                   | `ghcr.io/element-hq/element-call`    | 172.42.0.5   |
+| **LiveKit**        | WebRTC SFU (group video/voice)   | `livekit/livekit-server`             | 172.42.0.6   |
+| **Valkey**         | Redis-compatible cache/queue     | `valkey/valkey`                      | 172.42.0.7   |
+| **LK-JWT-Service** | MatrixRTC authorization          | `ghcr.io/element-hq/lk-jwt-service` | 172.42.0.8   |
+| **Coturn**         | TURN/STUN relay (NAT traversal)  | `coturn/coturn`                      | host network |
+| **Nginx**          | Reverse proxy + TLS              | `nginx:alpine`                       | 172.42.0.10  |
+| **Certbot**        | Auto TLS renewal                 | `certbot/certbot`                    | —            |
 
 ## Quick Start
 
 ```bash
-# 1. Clone and run setup
+# 1. Clone the repo
+git clone https://github.com/bmartino1/matrix-textvoicevideo.git
+cd matrix-textvoicevideo
+
+# 2. Run setup
 chmod +x setup.sh
 sudo ./setup.sh --domain chat.yourdomain.com
 
-# 2. Start the stack
+# 3. Start the stack
 docker compose up -d
 
-# 3. Create your first admin user
+# 4. Create your first admin user
 ./scripts/create-user.sh admin --admin
 
-# 4. Create regular users
+# 5. Create regular users
 ./scripts/create-user.sh alice
 ./scripts/create-user.sh bob
 ```
@@ -1280,59 +1584,126 @@ docker compose up -d
 sudo ./setup.sh --domain myserver.local --no-tls
 ```
 
+## Specify External IP Manually
+
+If auto-detection fails (e.g. behind a proxy):
+
+```bash
+sudo ./setup.sh --domain chat.example.com --external-ip 203.0.113.42
+```
+
 ## Admin Scripts
 
-| Script                  | Purpose                    |
-|-------------------------|----------------------------|
-| `scripts/create-user.sh`   | Register new user          |
-| `scripts/reset-password.sh`| Reset user password        |
-| `scripts/list-users.sh`    | List all users             |
-| `scripts/deactivate-user.sh`| Disable a user account   |
-| `scripts/rotate-secrets.sh`| Rotate TURN/LiveKit keys  |
-| `scripts/backup.sh`        | Full server backup         |
-| `scripts/status.sh`        | Check service health       |
+| Script                         | Purpose                    |
+|--------------------------------|----------------------------|
+| `scripts/create-user.sh`      | Register new user          |
+| `scripts/reset-password.sh`   | Reset user password        |
+| `scripts/list-users.sh`       | List all users             |
+| `scripts/deactivate-user.sh`  | Disable a user account     |
+| `scripts/rotate-secrets.sh`   | Rotate TURN/LiveKit keys   |
+| `scripts/backup.sh`           | Full server backup         |
+| `scripts/status.sh`           | Check service health       |
+
+All admin scripts use `scripts/load-env.sh` to safely parse the `.env` file
+(handles spaces, quotes, and special characters in values).
 
 ## Architecture
 
 ```
-Internet → Nginx (443/80) → Element Web (chat UI)
-                           → Synapse (/_matrix, /_synapse)
-                           → Element Call (/call)
-                           → LiveKit (/livekit-ws)
-         → Coturn (3478 UDP/TCP, 5349 TLS)
-         → LiveKit (50000-50200 UDP media)
+Internet → Nginx (60443/60080) → Element Web (chat UI)
+                                → Synapse (/_matrix, /_synapse)
+                                → Element Call (/call)
+                                → LK-JWT-Service (/livekit/jwt) → LiveKit JWT auth
+                                → LiveKit SFU (/livekit/sfu)    → WebRTC signaling
+         → Coturn (3478 UDP/TCP, 5349 TLS)                     → TURN relay
+         → LiveKit (7881 TCP, 50000-50200 UDP)                  → WebRTC media
 ```
+
+### Voice/Video Call Flow
+
+1. User clicks "Call" in Element Web → requests OpenID token from Synapse
+2. Element Call sends token to LK-JWT-Service via `/livekit/jwt/`
+3. LK-JWT-Service validates against Synapse, returns LiveKit JWT
+4. Client connects to LiveKit SFU with the JWT
+5. LiveKit routes audio/video between participants
+6. Coturn provides TURN relay for users behind strict NATs
 
 ## Security Defaults
 
 - Registration is **disabled** — use admin scripts to create users
 - PostgreSQL initialized with **C locale** (required by Synapse)
 - All secrets **auto-generated** with cryptographic randomness
+- `.env` values are **quoted** to prevent shell injection
 - Trusted key servers **empty** — fully self-hosted, no matrix.org dependency
 - TURN server denies relay to **all private IP ranges**
 - Rate limiting on registration, login, and messaging
 - Password policy: 10+ chars, upper + lower + digit required
-- Admin API restricted (configurable IP whitelist in nginx)
-- No ports exposed except nginx (80/443), coturn, and LiveKit UDP
+- Internal service ports **commented out** by default (uncomment for debug)
+- No ports exposed except Nginx, Coturn, and LiveKit UDP
 
 ## Firewall Requirements
 
 | Port          | Protocol | Service    | Purpose               |
 |---------------|----------|------------|-----------------------|
-| 80            | TCP      | Nginx      | HTTP / ACME           |
-| 443           | TCP      | Nginx      | HTTPS                 |
+| 60080         | TCP      | Nginx      | HTTP / ACME           |
+| 60443         | TCP      | Nginx      | HTTPS                 |
 | 3478          | UDP+TCP  | Coturn     | TURN/STUN             |
 | 5349          | TCP      | Coturn     | TURNS (TLS)           |
 | 49160-49250   | UDP      | Coturn     | TURN media relay      |
+| 7881          | TCP      | LiveKit    | WebRTC TCP fallback   |
 | 50000-50200   | UDP      | LiveKit    | WebRTC media          |
+
+## Unraid Notes
+
+This stack uses `composeman` labels for Unraid Docker management. Each container
+has a custom icon and the Nginx container has a WebUI link configured. Deploy
+via the Unraid Compose Manager or manually with `docker compose up -d`.
+
+## Troubleshooting
+
+### Voice/Video calls connect but no audio/video
+- Verify `EXTERNAL_IP` in `.env` is your actual public IP
+- Ensure ports 7881/tcp and 50000-50200/udp are forwarded
+- Check LiveKit JWT service: `curl https://yourdomain.com/livekit/jwt/healthz`
+- Check Coturn ports 3478 and 5349 are reachable
+
+### "Failed to load service worker" warning
+- This is a known Element Web warning about authenticated media
+- It does not affect core functionality (text, voice, video all work)
+
+### Admin scripts show "command not found"
+- Ensure you're running scripts from the project root
+- The `.env` file must be generated by `setup.sh` (values are quoted)
 
 ## Scaling Notes
 
 - LiveKit SFU handles up to **50 participants** per room by default
-- For 50+ users, add Redis and scale LiveKit horizontally
-- Synapse workers can be added for 100+ total users
+- Valkey enables Synapse worker support for higher throughput
+- For 100+ users, add Synapse workers (stream_writers, federation_sender)
 - Coturn `total-quota=300` supports ~50 concurrent TURN relays
 READMEEOF
+
+###############################################################################
+# GENERATE .gitignore
+###############################################################################
+cat > "$PROJECT_DIR/.gitignore" <<'GIEOF'
+# Secrets
+.env
+
+# Data
+data/
+backups/
+
+# OS
+.DS_Store
+*.swp
+*.swo
+*~
+
+# IDE
+.vscode/
+.idea/
+GIEOF
 
 ###############################################################################
 # DONE
@@ -1346,6 +1717,7 @@ echo -e "  Domain:      ${CYAN}${DOMAIN}${NC}"
 echo -e "  URL:         ${CYAN}${PUBLIC_URL}${NC}"
 echo -e "  Data Dir:    ${CYAN}${DATA_DIR}${NC}"
 echo -e "  External IP: ${CYAN}${EXTERNAL_IP}${NC}"
+echo -e "  Internal IP: ${CYAN}${INTERNAL_IP}${NC}"
 echo ""
 echo -e "${YELLOW}NEXT STEPS:${NC}"
 echo "  1. Start the stack:"
@@ -1360,9 +1732,19 @@ echo ""
 echo "  4. Open in browser:"
 echo -e "     ${CYAN}${PUBLIC_URL}${NC}"
 echo ""
+echo -e "${YELLOW}SERVICE IPS (172.42.0.0/24):${NC}"
+echo "  postgres     172.42.0.2"
+echo "  synapse      172.42.0.3"
+echo "  element-web  172.42.0.4"
+echo "  element-call 172.42.0.5"
+echo "  livekit      172.42.0.6"
+echo "  valkey       172.42.0.7"
+echo "  lk-jwt-svc   172.42.0.8"
+echo "  nginx        172.42.0.10"
+echo ""
 echo -e "${YELLOW}IMPORTANT:${NC}"
 echo "  • .env contains all secrets — keep it safe! (chmod 600)"
 echo "  • Signing keys in data/synapse/ are IRREPLACEABLE — back them up!"
-echo "  • Run ${CYAN}./scripts/backup.sh${NC} regularly"
-echo "  • Run ${CYAN}./scripts/status.sh${NC} to check service health"
+echo -e "  • Run ${CYAN}./scripts/backup.sh${NC} regularly"
+echo -e "  • Run ${CYAN}./scripts/status.sh${NC} to check service health"
 echo ""

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # Usage: ./scripts/create-user.sh <username> [--admin]
-source "$(dirname "$0")/../.env"
+source "$(dirname "$0")/load-env.sh"
 
 USERNAME="${1:?Usage: $0 <username> [--admin]}"
 ADMIN_FLAG=""

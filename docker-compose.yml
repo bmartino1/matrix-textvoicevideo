@@ -1,16 +1,55 @@
 ###############################################################################
-# matrix-textvoicevideo — Docker Compose Stack
+# MATRIX-TEXTVOICEVIDEO — Docker Compose Stack
+# Self-Hosted Discord Alternative
 # Text · Voice · Video · WebRTC · 10-50 concurrent users
+#
+# Service IPs (matrix-net 172.42.0.0/24):
+#   postgres     172.42.0.2
+#   synapse      172.42.0.3
+#   element-web  172.42.0.4
+#   element-call 172.42.0.5
+#   livekit      172.42.0.6
+#   valkey       172.42.0.7
+#   lk-jwt-svc   172.42.0.8
+#   nginx        172.42.0.10
 ###############################################################################
+
 networks:
   matrix-net:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.42.0.0/24
 
 services:
 
-  #############################################
+  ###########################################################################
+  # VALKEY (Redis replacement) — Synapse + LiveKit coordination
+  ###########################################################################
+  valkey:
+    image: valkey/valkey:latest
+    container_name: matrix-valkey
+    command: ["valkey-server", "--appendonly", "yes"]
+    volumes:
+      - ${DATA_DIR}/valkey:/data
+    networks:
+      matrix-net:
+        ipv4_address: 172.42.0.7
+    # ports:
+    #   - "6379:6379"          # Uncomment for debug only
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    labels:
+      net.unraid.docker.icon: "https://raw.githubusercontent.com/SnuK87/unraid-templates/refs/heads/main/icons/valkey-logo.png"
+      net.unraid.docker.managed: "composeman"
+
+  ###########################################################################
   # POSTGRES — Database (C locale for Synapse)
-  #############################################
+  ###########################################################################
   postgres:
     image: postgres:16-alpine
     container_name: matrix-postgres
@@ -22,135 +61,158 @@ services:
     volumes:
       - ${DATA_DIR}/postgres:/var/lib/postgresql/data
     networks:
-      - matrix-net
+      matrix-net:
+        ipv4_address: 172.42.0.2
+    # ports:
+    #   - "5432:5432"          # Uncomment for debug only
     restart: unless-stopped
+    shm_size: 256mb
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 5
-#For Security Ports are removed nginx RP
-#    ports:
-#      - "5432:5432"
-    shm_size: 256mb
     labels:
-      net.unraid.docker.icon: https://cdn.jsdelivr.net/gh/selfhst/icons/png/postgresql.png
+      net.unraid.docker.icon: "https://cdn.jsdelivr.net/gh/selfhst/icons/png/postgresql.png"
       net.unraid.docker.managed: "composeman"
 
-  #############################################
+  ###########################################################################
   # SYNAPSE — Matrix Homeserver
-  #############################################
+  ###########################################################################
   synapse:
     image: matrixdotorg/synapse:latest
     container_name: matrix-synapse
     depends_on:
       postgres:
         condition: service_healthy
+      valkey:
+        condition: service_healthy
     environment:
       SYNAPSE_SERVER_NAME: ${SERVER_NAME}
       SYNAPSE_REPORT_STATS: "no"
-      UID: "991"
-      GID: "991"
     volumes:
       - ${DATA_DIR}/synapse/appdata:/data
       - ${DATA_DIR}/synapse/media_store:/data/media_store
     networks:
-      - matrix-net
+      matrix-net:
+        ipv4_address: 172.42.0.3
+    # ports:
+    #   - "8008:8008"          # Uncomment for debug only
     restart: unless-stopped
-    labels:
-      net.unraid.docker.icon: https://cdn.jsdelivr.net/gh/selfhst/icons/png/matrix.png
-      net.unraid.docker.webui: http://[IP]:8008/_matrix/client/versions
-      net.unraid.docker.managed: "composeman"
     healthcheck:
       test: ["CMD", "curl", "-fSs", "http://localhost:8008/health"]
       interval: 15s
       timeout: 5s
       retries: 3
       start_period: 30s
-#For Security Ports are removed nginx RP
-#    ports:
-#      - "8008:8008"
+    labels:
+      net.unraid.docker.icon: "https://cdn.jsdelivr.net/gh/selfhst/icons/png/matrix.png"
+      net.unraid.docker.webui: "http://[IP]:8008/_matrix/client/versions"
+      net.unraid.docker.managed: "composeman"
 
-  #############################################
+  ###########################################################################
   # LIVEKIT — WebRTC SFU (Voice/Video)
-  #############################################
+  ###########################################################################
   livekit:
     image: livekit/livekit-server:latest
     container_name: matrix-livekit
-    command: ["--config", "/etc/livekit.yaml"]
+    command: ["--config", "/etc/livekit.yaml", "--node-ip", "${EXTERNAL_IP}"]
+    depends_on:
+      valkey:
+        condition: service_healthy
     volumes:
       - ${DATA_DIR}/livekit/config/livekit.yaml:/etc/livekit.yaml:ro
+    networks:
+      matrix-net:
+        ipv4_address: 172.42.0.6
     ports:
-      # UDP media port range exposed on host
+      # These MUST be exposed — WebRTC media traffic
       - "7881:7881/tcp"
       - "50000-50200:50000-50200/udp"
+      # - "7880:7880/tcp"     # Uncomment for debug only (SFU HTTP/WS)
+    restart: unless-stopped
+    labels:
+      net.unraid.docker.icon: "https://pbs.twimg.com/profile_images/1791157444829380609/M6p5M6-A_400x400.png"
+      net.unraid.docker.managed: "composeman"
+
+  ###########################################################################
+  # LK-JWT-SERVICE — MatrixRTC Authorization (LiveKit JWT tokens)
+  ###########################################################################
+  lk-jwt-service:
+    image: ghcr.io/element-hq/lk-jwt-service:latest
+    container_name: matrix-lk-jwt
+    depends_on:
+      - livekit
+      - synapse
+    environment:
+      LIVEKIT_JWT_PORT: "8080"
+      LIVEKIT_URL: "${SCHEME}://${SERVER_NAME}/livekit/sfu"
+      LIVEKIT_KEY: "${LIVEKIT_API_KEY}"
+      LIVEKIT_SECRET: "${LIVEKIT_API_SECRET}"
+      LIVEKIT_FULL_ACCESS_HOMESERVERS: "${SERVER_NAME}"
     networks:
-      - matrix-net
+      matrix-net:
+        ipv4_address: 172.42.0.8
+    # ports:
+    #   - "8090:8080"          # Uncomment for debug only
     restart: unless-stopped
     labels:
-      net.unraid.docker.icon: https://pbs.twimg.com/profile_images/1791157444829380609/M6p5M6-A_400x400.png
-      net.unraid.docker.managed: "composeman"
-#For Security Ports are removed nginx RP
-#    ports:
-#      - "7880:7880/tcp"  # WebSocket
-#      - "7881:7881/udp"  # Media
-
-  #############################################
-  # COTURN — TURN/STUN relay for NAT traversal
-  #############################################
-  coturn:
-    image: coturn/coturn:latest
-    container_name: matrix-coturn
-    network_mode: host
-# Host mode required for proper UDP traversal
-    volumes:
-      - ${DATA_DIR}/coturn/config/turnserver.conf:/etc/coturn/turnserver.conf:ro
-    restart: unless-stopped
-    labels:
-      net.unraid.docker.icon: https://raw.githubusercontent.com/xthursdayx/docker-templates/master/xthursdayx/images/webrtc-icon.png
+      net.unraid.docker.icon: "https://cdn.jsdelivr.net/gh/selfhst/icons/png/element.png"
       net.unraid.docker.managed: "composeman"
 
-  #############################################
-  # ELEMENT WEB — Chat UI
-  #############################################
+  ###########################################################################
+  # ELEMENT WEB — Chat UI (like Discord)
+  ###########################################################################
   element-web:
     image: vectorim/element-web:latest
     container_name: matrix-element-web
     volumes:
       - ${DATA_DIR}/element-web/config/config.json:/app/config.json:ro
     networks:
-      - matrix-net
+      matrix-net:
+        ipv4_address: 172.42.0.4
+    # ports:
+    #   - "8080:80"            # Uncomment for debug only
     restart: unless-stopped
     labels:
-      net.unraid.docker.icon: https://cdn.jsdelivr.net/gh/selfhst/icons/png/element.png
+      net.unraid.docker.icon: "https://cdn.jsdelivr.net/gh/selfhst/icons/png/element.png"
       net.unraid.docker.managed: "composeman"
-#      net.unraid.docker.webui: http://[IP]:8080
-#For Security Ports are removed nginx RP
-#    ports:
-#      - "8080:80"
 
-  #############################################
+  ###########################################################################
   # ELEMENT CALL — Video/Voice Call UI
-  #############################################
+  ###########################################################################
   element-call:
     image: ghcr.io/element-hq/element-call:latest
     container_name: matrix-element-call
     volumes:
       - ${DATA_DIR}/element-call/config/config.json:/app/config.json:ro
     networks:
-      - matrix-net
+      matrix-net:
+        ipv4_address: 172.42.0.5
+    # ports:
+    #   - "8082:8080"          # Uncomment for debug only
     restart: unless-stopped
     labels:
-      net.unraid.docker.icon: https://cdn.jsdelivr.net/gh/selfhst/icons/png/element.png
+      net.unraid.docker.icon: "https://cdn.jsdelivr.net/gh/selfhst/icons/png/element.png"
       net.unraid.docker.managed: "composeman"
-#      net.unraid.docker.webui: http://[IP]:8081
-#For Security Ports are removed nginx RP
-#    ports:
-#      - "8081:8080"
 
-  #############################################
+  ###########################################################################
+  # COTURN — TURN/STUN relay for NAT traversal (host networking required)
+  ###########################################################################
+  coturn:
+    image: coturn/coturn:latest
+    container_name: matrix-coturn
+    network_mode: host
+    volumes:
+      - ${DATA_DIR}/coturn/config/turnserver.conf:/etc/coturn/turnserver.conf:ro
+    restart: unless-stopped
+    labels:
+      net.unraid.docker.icon: "https://raw.githubusercontent.com/xthursdayx/docker-templates/master/xthursdayx/images/webrtc-icon.png"
+      net.unraid.docker.managed: "composeman"
+
+  ###########################################################################
   # NGINX — Reverse Proxy + TLS Termination
-  #############################################
+  ###########################################################################
   nginx:
     image: nginx:alpine
     container_name: matrix-nginx
@@ -158,26 +220,27 @@ services:
       - ${DATA_DIR}/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ${DATA_DIR}/nginx/html:/var/www/html:ro
       - ${DATA_DIR}/nginx/certs:/etc/nginx/certs:ro
+    networks:
+      matrix-net:
+        ipv4_address: 172.42.0.10
     ports:
       - "60080:80"
       - "60443:443"
-#Use Router Nat Port Forwarding to forward Wan port 80 and wan port 443 to RP port 60080 and 60443
     depends_on:
       - synapse
       - element-web
       - element-call
       - livekit
-    networks:
-      - matrix-net
+      - lk-jwt-service
     restart: unless-stopped
     labels:
-      net.unraid.docker.icon: https://nginxproxymanager.com/icon.png
-#      net.unraid.docker.webui: http://FQDN-DOMAINNAME
+      net.unraid.docker.icon: "https://nginxproxymanager.com/icon.png"
+      net.unraid.docker.webui: "http://[IP]:60080"
       net.unraid.docker.managed: "composeman"
 
-  #############################################
-  # CERTBOT — Auto TLS cert renewal (optional)
-  #############################################
+  ###########################################################################
+  # CERTBOT — Auto TLS cert renewal (optional, activate with tls profile)
+  ###########################################################################
   certbot:
     image: certbot/certbot:latest
     container_name: matrix-certbot
@@ -188,5 +251,5 @@ services:
     entrypoint: /bin/sh -c 'trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done'
     restart: unless-stopped
     labels:
-      net.unraid.docker.icon: https://assets.streamlinehq.com/image/private/w_300,h_300,ar_1/f_auto/v1/icons/1/certbot-574tzyoqi931ecf7iyr3im.png/certbot-mfyukhw14u9ejx1eovu27.png
+      net.unraid.docker.icon: "https://cdn.jsdelivr.net/gh/selfhst/icons/png/lets-encrypt.png"
       net.unraid.docker.managed: "composeman"
