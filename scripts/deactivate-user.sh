@@ -9,22 +9,14 @@ set -euo pipefail
 # --erase:
 #   Also permanently deletes the user's messages and personal data.
 #
-# Get your admin access token:
+# Token:
 #   Element Web → Settings → Help & About → Access Token
 #
+source "$(dirname "$0")/load-env.sh"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/load-env.sh"
-
-USERNAME="${1:-}"
-TOKEN="${2:-}"
+USERNAME="${1:?Usage: $0 <username> <admin-token> [--erase]}"
+TOKEN="${2:?Usage: $0 <username> <admin-token> [--erase]}"
 ERASE=false
-
-if [ -z "$USERNAME" ] || [ -z "$TOKEN" ]; then
-  echo "Usage: $0 <username> <admin-token> [--erase]"
-  exit 1
-fi
-
 [ "${3:-}" = "--erase" ] && ERASE=true
 
 USER_ID="@${USERNAME}:${SERVER_NAME}"
@@ -35,20 +27,15 @@ if [ "$ERASE" = "true" ]; then
 fi
 echo ""
 
-# Ensure synapse container is running
-if ! docker ps --format '{{.Names}}' | grep -q "^matrix-synapse$"; then
+if ! docker ps --format '{{.Names}}' | grep -q '^matrix-synapse$'; then
   echo "ERROR: matrix-synapse container is not running."
-  echo "  Run: docker compose ps"
+  echo "  Check: cd \"$PROJECT_DIR\" && docker compose ps"
   exit 1
 fi
 
 read -p "Are you sure? (y/N): " confirm
-if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
-  echo "Aborted."
-  exit 0
-fi
+[[ "$confirm" != "y" && "$confirm" != "Y" ]] && { echo "Aborted."; exit 0; }
 
-# Execute API call inside container
 HTTP_CODE="$(docker exec -i matrix-synapse sh -lc "
   curl -s -o /tmp/matrix-deact-resp.json -w '%{http_code}' -X POST \
     -H 'Authorization: Bearer ${TOKEN}' \
@@ -59,22 +46,11 @@ HTTP_CODE="$(docker exec -i matrix-synapse sh -lc "
 
 if [ "$HTTP_CODE" = "200" ]; then
   echo "✓ ${USER_ID} deactivated."
-  if [ "$ERASE" = "true" ]; then
-    echo "  User data erased from server."
-  fi
+  [ "$ERASE" = "true" ] && echo "  User data erased from server."
 else
   echo "✗ Failed (HTTP ${HTTP_CODE})."
   echo ""
-
-  # Show API response (if available)
   docker exec -i matrix-synapse sh -lc "cat /tmp/matrix-deact-resp.json 2>/dev/null || true"
-  echo ""
-
-  echo "Common causes:"
-  echo "  • Admin token expired — log into Element Web and copy a fresh one"
-  echo "  • Username doesn't exist — check: ./scripts/list-users.sh <token>"
-  echo "  • Synapse not running — check: docker compose ps"
 fi
 
-# Cleanup container temp file
 docker exec -i matrix-synapse sh -lc "rm -f /tmp/matrix-deact-resp.json" >/dev/null 2>&1 || true
