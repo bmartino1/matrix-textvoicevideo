@@ -1,17 +1,42 @@
+#version: "3.9"
 ###############################################################################
 # MATRIX-TEXTVOICEVIDEO — Docker Compose Stack
-# Self-Hosted Discord Alternative
-# Text · Voice · Video · WebRTC · 10-50 concurrent users
+# A Self-Hosted Discord Like Alternative
+# Text · Voice (Coturn) · Video (Jitsi) · 10-50 concurrent users
 #
-# Service IPs (matrix-net 172.42.0.0/24):
-#   postgres     172.42.0.2
-#   synapse      172.42.0.3
-#   element-web  172.42.0.4
-#   element-call 172.42.0.5
-#   livekit      172.42.0.6
-#   valkey       172.42.0.7
-#   lk-jwt-svc   172.42.0.8
-#   nginx        172.42.0.10
+# Network: matrix-net (172.42.0.0/24 bridge)
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# BRIDGE NETWORK CONTAINERS (static IPs)
+# ─────────────────────────────────────────────────────────────────────────────
+# postgres         172.42.0.2
+# synapse          172.42.0.3
+# element-web      172.42.0.4
+# valkey           172.42.0.7
+# nginx            172.42.0.10
+#
+# JITSI (bridge components)
+# jitsi-prosody    172.42.0.20
+# jitsi-jicofo     172.42.0.21
+# jitsi-web        172.42.0.22
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# HOST NETWORK CONTAINERS
+# ─────────────────────────────────────────────────────────────────────────────
+# coturn           host (3478 / 5349)
+# jitsi-jvb        host (UDP 10000)
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# EXPOSED PUBLIC PORTS (via nginx + router)
+# ─────────────────────────────────────────────────────────────────────────────
+# WAN 443  → nginx 60443
+# WAN 80   → nginx 60080
+#
+# Jitsi Media:
+# WAN UDP 10000 → jitsi-jvb (host)
+#
+# Matrix Voice:
+# WAN 3478/5349 → coturn (host)
 ###############################################################################
 
 networks:
@@ -22,9 +47,8 @@ networks:
         - subnet: 172.42.0.0/24
 
 services:
-
   ###########################################################################
-  # VALKEY (Redis replacement) — Synapse + LiveKit coordination
+  # VALKEY (Redis replacement) — Synapse coordination
   ###########################################################################
   valkey:
     image: valkey/valkey:latest
@@ -35,8 +59,6 @@ services:
     networks:
       matrix-net:
         ipv4_address: 172.42.0.7
-    # ports:
-    #   - "6379:6379"          # Uncomment for debug only
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "valkey-cli", "ping"]
@@ -63,8 +85,6 @@ services:
     networks:
       matrix-net:
         ipv4_address: 172.42.0.2
-    # ports:
-    #   - "5432:5432"          # Uncomment for debug only
     restart: unless-stopped
     shm_size: 256mb
     healthcheck:
@@ -93,11 +113,11 @@ services:
     volumes:
       - ${DATA_DIR}/synapse/appdata:/data
       - ${DATA_DIR}/synapse/media_store:/data/media_store
+      # If you keep the 8448 TLS listener enabled in homeserver.yaml, you still need these:
+      - ${DATA_DIR}/nginx/certs/live/${SERVER_NAME}:/certs:ro
     networks:
       matrix-net:
         ipv4_address: 172.42.0.3
-    # ports:
-    #   - "8008:8008"          # Uncomment for debug only
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-fSs", "http://localhost:8008/health"]
@@ -111,58 +131,7 @@ services:
       net.unraid.docker.managed: "composeman"
 
   ###########################################################################
-  # LIVEKIT — WebRTC SFU (Voice/Video)
-  ###########################################################################
-  livekit:
-    image: livekit/livekit-server:latest
-    container_name: matrix-livekit
-    command: ["--config", "/etc/livekit.yaml", "--node-ip", "${EXTERNAL_IP}"]
-    depends_on:
-      valkey:
-        condition: service_healthy
-    volumes:
-      - ${DATA_DIR}/livekit/config/livekit.yaml:/etc/livekit.yaml:ro
-    networks:
-      matrix-net:
-        ipv4_address: 172.42.0.6
-    ports:
-      # These MUST be exposed — WebRTC media traffic
-      - "7881:7881/tcp"
-      - "50000-50200:50000-50200/udp"
-      # - "7880:7880/tcp"     # Uncomment for debug only (SFU HTTP/WS)
-    restart: unless-stopped
-    labels:
-      net.unraid.docker.icon: "https://pbs.twimg.com/profile_images/1791157444829380609/M6p5M6-A_400x400.png"
-      net.unraid.docker.managed: "composeman"
-
-  ###########################################################################
-  # LK-JWT-SERVICE — MatrixRTC Authorization (LiveKit JWT tokens)
-  ###########################################################################
-  lk-jwt-service:
-    image: ghcr.io/element-hq/lk-jwt-service:latest
-    container_name: matrix-lk-jwt
-    depends_on:
-      - livekit
-      - synapse
-    environment:
-#      LIVEKIT_JWT_PORT: "8080" #Depriacted for Bind...
-      LIVEKIT_JWT_BIND: "8080"
-      LIVEKIT_URL: "${SCHEME}://${SERVER_NAME}/livekit/sfu"
-      LIVEKIT_KEY: "${LIVEKIT_API_KEY}"
-      LIVEKIT_SECRET: "${LIVEKIT_API_SECRET}"
-      LIVEKIT_FULL_ACCESS_HOMESERVERS: "${SERVER_NAME}"
-    networks:
-      matrix-net:
-        ipv4_address: 172.42.0.8
-    # ports:
-    #   - "8090:8080"          # Uncomment for debug only
-    restart: unless-stopped
-    labels:
-      net.unraid.docker.icon: "https://cdn.jsdelivr.net/gh/selfhst/icons/png/element.png"
-      net.unraid.docker.managed: "composeman"
-
-  ###########################################################################
-  # ELEMENT WEB — Chat UI (like Discord)
+  # ELEMENT WEB — Chat UI
   ###########################################################################
   element-web:
     image: vectorim/element-web:latest
@@ -172,33 +141,13 @@ services:
     networks:
       matrix-net:
         ipv4_address: 172.42.0.4
-    # ports:
-    #   - "8080:80"            # Uncomment for debug only
     restart: unless-stopped
     labels:
       net.unraid.docker.icon: "https://cdn.jsdelivr.net/gh/selfhst/icons/png/element.png"
       net.unraid.docker.managed: "composeman"
 
   ###########################################################################
-  # ELEMENT CALL — Video/Voice Call UI
-  ###########################################################################
-  element-call:
-    image: ghcr.io/element-hq/element-call:latest
-    container_name: matrix-element-call
-    volumes:
-      - ${DATA_DIR}/element-call/config/config.json:/app/config.json:ro
-    networks:
-      matrix-net:
-        ipv4_address: 172.42.0.5
-    # ports:
-    #   - "8082:8080"          # Uncomment for debug only
-    restart: unless-stopped
-    labels:
-      net.unraid.docker.icon: "https://cdn.jsdelivr.net/gh/selfhst/icons/png/element.png"
-      net.unraid.docker.managed: "composeman"
-
-  ###########################################################################
-  # COTURN — TURN/STUN relay for NAT traversal (host networking required)
+  # COTURN — TURN/STUN relay for NAT traversal (legacy voice/video fallback)
   ###########################################################################
   coturn:
     image: coturn/coturn:latest
@@ -206,13 +155,15 @@ services:
     network_mode: host
     volumes:
       - ${DATA_DIR}/coturn/config/turnserver.conf:/etc/turnserver.conf:ro
+      - ${DATA_DIR}/nginx/certs/live/${SERVER_NAME}:/certs:ro
+    command: ["turnserver", "-c", "/etc/turnserver.conf"]
     restart: unless-stopped
     labels:
       net.unraid.docker.icon: "https://raw.githubusercontent.com/xthursdayx/docker-templates/master/xthursdayx/images/webrtc-icon.png"
       net.unraid.docker.managed: "composeman"
 
   ###########################################################################
-  # NGINX — Reverse Proxy + TLS Termination
+  # NGINX — Reverse Proxy + TLS Termination (Matrix + Element + Jitsi)
   ###########################################################################
   nginx:
     image: nginx:alpine
@@ -230,9 +181,7 @@ services:
     depends_on:
       - synapse
       - element-web
-      - element-call
-      - livekit
-      - lk-jwt-service
+      - jitsi-web
     restart: unless-stopped
     labels:
       net.unraid.docker.icon: "https://nginxproxymanager.com/icon.png"
@@ -240,17 +189,112 @@ services:
       net.unraid.docker.managed: "composeman"
 
   ###########################################################################
-  # CERTBOT — Auto TLS cert renewal (optional, activate with tls profile)
+  # CERTBOT — Auto TLS cert renewal (optional)
   ###########################################################################
-  certbot:
-    image: certbot/certbot:latest
-    container_name: matrix-certbot
-    profiles: ["tls"]
+#  certbot:
+#    image: certbot/certbot:latest
+#    container_name: matrix-certbot
+#    profiles: ["tls"]
+#    volumes:
+#      - ${DATA_DIR}/nginx/certs:/etc/letsencrypt
+#      - ${DATA_DIR}/nginx/html:/var/www/certbot
+#    entrypoint: /bin/sh -c 'trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done'
+#    restart: unless-stopped
+#    labels:
+#      net.unraid.docker.icon: "https://cdn.jsdelivr.net/gh/selfhst/icons/png/lets-encrypt.png"
+#      net.unraid.docker.managed: "composeman"
+
+###############################################################################
+# JITSI — SELF HOSTED (meet.bmartino.crabdance.com)
+###############################################################################
+
+  jitsi-prosody:
+    image: jitsi/prosody:stable
+    container_name: jitsi-prosody
+    networks:
+      matrix-net:
+        ipv4_address: 172.42.0.20
+    environment:
+      TZ: ${TZ}
+      XMPP_DOMAIN: ${JITSI_DOMAIN}
+      XMPP_AUTH_DOMAIN: ${JITSI_AUTH_DOMAIN}
+      XMPP_MUC_DOMAIN: ${JITSI_MUC_DOMAIN}
+      XMPP_INTERNAL_MUC_DOMAIN: ${JITSI_INTERNAL_MUC_DOMAIN}
+      JICOFO_AUTH_PASSWORD: ${JICOFO_AUTH_PASSWORD}
+      JVB_AUTH_PASSWORD: ${JVB_AUTH_PASSWORD}
+      ENABLE_AUTH: "0"
+      ENABLE_GUESTS: "1"
     volumes:
-      - ${DATA_DIR}/nginx/certs:/etc/letsencrypt
-      - ${DATA_DIR}/nginx/html:/var/www/certbot
-    entrypoint: /bin/sh -c 'trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done'
+      - ${DATA_DIR}/jitsi/prosody:/config
     restart: unless-stopped
     labels:
-      net.unraid.docker.icon: "https://cdn.jsdelivr.net/gh/selfhst/icons/png/lets-encrypt.png"
+      net.unraid.docker.icon: "https://upload.wikimedia.org/wikipedia/commons/5/59/Jitsi-logo.svg"
+      net.unraid.docker.managed: "composeman"
+
+  jitsi-jicofo:
+    image: jitsi/jicofo:stable
+    container_name: jitsi-jicofo
+    depends_on:
+      - jitsi-prosody
+    networks:
+      matrix-net:
+        ipv4_address: 172.42.0.21
+    environment:
+      TZ: ${TZ}
+      XMPP_DOMAIN: ${JITSI_DOMAIN}
+      XMPP_AUTH_DOMAIN: ${JITSI_AUTH_DOMAIN}
+      XMPP_INTERNAL_MUC_DOMAIN: ${JITSI_INTERNAL_MUC_DOMAIN}
+      XMPP_SERVER: jitsi-prosody
+      JICOFO_AUTH_PASSWORD: ${JICOFO_AUTH_PASSWORD}
+    volumes:
+      - ${DATA_DIR}/jitsi/jicofo:/config
+    restart: unless-stopped
+    labels:
+      net.unraid.docker.icon: "https://upload.wikimedia.org/wikipedia/commons/5/59/Jitsi-logo.svg"
+      net.unraid.docker.managed: "composeman"
+
+  jitsi-web:
+    image: jitsi/web:stable
+    container_name: jitsi-web
+    depends_on:
+      - jitsi-prosody
+      - jitsi-jicofo
+    networks:
+      matrix-net:
+        ipv4_address: 172.42.0.22
+    environment:
+      TZ: ${TZ}
+      PUBLIC_URL: ${JITSI_PUBLIC_URL}
+      XMPP_DOMAIN: ${JITSI_DOMAIN}
+      XMPP_AUTH_DOMAIN: ${JITSI_AUTH_DOMAIN}
+      XMPP_BOSH_URL_BASE: "http://jitsi-prosody:5280"
+      XMPP_SERVER: jitsi-prosody
+    volumes:
+      - ${DATA_DIR}/jitsi/web:/config
+    restart: unless-stopped
+    labels:
+      net.unraid.docker.icon: "https://upload.wikimedia.org/wikipedia/commons/5/59/Jitsi-logo.svg"
+      net.unraid.docker.webui: "http://[IP]:60080"
+      net.unraid.docker.managed: "composeman"
+
+  jitsi-jvb:
+    image: jitsi/jvb:stable
+    container_name: jitsi-jvb
+    network_mode: host
+    depends_on:
+      - jitsi-prosody
+    environment:
+      TZ: ${TZ}
+      XMPP_DOMAIN: ${JITSI_DOMAIN}
+      XMPP_AUTH_DOMAIN: ${JITSI_AUTH_DOMAIN}
+      XMPP_INTERNAL_MUC_DOMAIN: ${JITSI_INTERNAL_MUC_DOMAIN}
+      XMPP_SERVER: 172.42.0.20
+      JVB_AUTH_PASSWORD: ${JVB_AUTH_PASSWORD}
+      JVB_PORT: "10000"
+      JVB_ADVERTISE_IPS: ${EXTERNAL_IP}
+    volumes:
+      - ${DATA_DIR}/jitsi/jvb:/config
+    restart: unless-stopped
+    labels:
+      net.unraid.docker.icon: "https://upload.wikimedia.org/wikipedia/commons/5/59/Jitsi-logo.svg"
       net.unraid.docker.managed: "composeman"
