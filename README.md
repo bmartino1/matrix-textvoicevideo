@@ -30,11 +30,18 @@ Supports **10-50 concurrent users** in voice/video rooms.
 ```bash
 # 1. Clone
 git clone https://github.com/bmartino1/matrix-textvoicevideo.git /mnt/user/appdata/matrix-textvoicevideo
+chmod 777 -R /mnt/user/appdata/matrix-textvoicevideo
 cd /mnt/user/appdata/matrix-textvoicevideo
 
 # 2. Run setup (auto-detects IPs, generates all secrets, builds configs)
-sudo bash setup.sh --domain chat.yourdomain.com
+sudo bash setup.sh --domain chat.yourdomain.com --reset
+#Answer "YES" all caps no quotes...
+#cat .env to verify enverioment bare min
+```
 
+Here is where Unraid user Will now add the Compose to the WebUI to enable necessary edits, icons and docker controls...
+Other Distros:
+```bash
 # 3. Start the stack
 docker compose up -d
 
