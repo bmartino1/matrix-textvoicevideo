@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
+#
 # Full backup: database + configs + signing keys + media + certs
-# Usage: ./scripts/backup.sh [destination-dir]
+#
+# Usage:
+#   ./scripts/backup.sh [destination-dir]
+#
 source "$(dirname "$0")/load-env.sh"
 
 TS="$(date +%Y%m%d_%H%M%S)"
@@ -35,7 +39,8 @@ cp -a "$DATA_DIR/nginx/nginx.conf"                "$BACKUP_DIR/" 2>/dev/null || 
 cp -a "$DATA_DIR/element-web/config/config.json"  "$BACKUP_DIR/" 2>/dev/null || true
 
 echo "[3/5] Synapse signing key (CRITICAL)..."
-find "$DATA_DIR/synapse/appdata" -name "*.signing.key" -maxdepth 1 -print -exec cp -a {} "$BACKUP_DIR/" \; 2>/dev/null || true
+# FIX: -maxdepth must come before -name
+find "$DATA_DIR/synapse/appdata" -maxdepth 1 -type f -name "*.signing.key" -print -exec cp -a {} "$BACKUP_DIR/" \; 2>/dev/null || true
 
 echo "[4/5] Media store..."
 if [ -d "$DATA_DIR/synapse/media_store" ] && [ "$(ls -A "$DATA_DIR/synapse/media_store" 2>/dev/null)" ]; then
