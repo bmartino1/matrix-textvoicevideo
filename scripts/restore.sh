@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# Restore a backup created by scripts/backup.sh
-# Usage: ./scripts/restore.sh <backup-dir>
 #
-# WARNING: This will overwrite configs and restore DB/media.
+# Restore a backup created by scripts/backup.sh
+#
+# Usage:
+#   ./scripts/restore.sh <backup-dir>
+#
+# WARNING: Overwrites configs + restores DB/media/certs.
+#
 source "$(dirname "$0")/load-env.sh"
 
 BKP="${1:?Usage: $0 <backup-dir>}"
@@ -28,22 +32,21 @@ read -p "Type RESTORE to continue: " confirm
 
 cd "$PROJECT_DIR"
 
-echo "[1/5] Stopping stack..."
+echo "[1/6] Stopping stack..."
 docker compose down 2>/dev/null || docker-compose down 2>/dev/null || true
 
-echo "[2/5] Restoring configs..."
+echo "[2/6] Restoring configs..."
 [ -f "$BKP/dot.env" ] && cp -f "$BKP/dot.env" "$PROJECT_DIR/.env" && chmod 600 "$PROJECT_DIR/.env" || true
 [ -f "$BKP/homeserver.yaml" ] && cp -f "$BKP/homeserver.yaml" "$DATA_DIR/synapse/appdata/homeserver.yaml" || true
 [ -f "$BKP/nginx.conf" ] && cp -f "$BKP/nginx.conf" "$DATA_DIR/nginx/nginx.conf" || true
 [ -f "$BKP/turnserver.conf" ] && cp -f "$BKP/turnserver.conf" "$DATA_DIR/coturn/config/turnserver.conf" || true
 [ -f "$BKP/config.json" ] && cp -f "$BKP/config.json" "$DATA_DIR/element-web/config/config.json" || true
 
-# signing key
 if ls "$BKP"/*.signing.key >/dev/null 2>&1; then
   cp -f "$BKP"/*.signing.key "$DATA_DIR/synapse/appdata/" || true
 fi
 
-echo "[3/5] Restoring media_store..."
+echo "[3/6] Restoring media_store..."
 if [ -f "$BKP/media_store.tar.gz" ]; then
   rm -rf "$DATA_DIR/synapse/media_store"
   mkdir -p "$DATA_DIR/synapse"
@@ -53,7 +56,7 @@ else
   echo "      (no media tar found; skipped)"
 fi
 
-echo "[4/5] Restoring TLS certs..."
+echo "[4/6] Restoring TLS certs..."
 if [ -f "$BKP/nginx_certs.tar.gz" ]; then
   mkdir -p "$DATA_DIR/nginx"
   tar -xzf "$BKP/nginx_certs.tar.gz" -C "$DATA_DIR/nginx"
@@ -62,12 +65,16 @@ else
   echo "      (no cert tar found; skipped)"
 fi
 
-echo "[5/5] Starting stack..."
-docker compose up -d 2>/dev/null || docker-compose up -d 2>/dev/null
+echo "[5/6] Starting DB/cache first..."
+docker compose up -d postgres valkey 2>/dev/null || docker-compose up -d postgres valkey 2>/dev/null
 
-echo ""
 echo "Waiting for Postgres..."
-sleep 5
+for i in {1..30}; do
+  if docker exec matrix-postgres pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" -q 2>/dev/null; then
+    break
+  fi
+  sleep 2
+done
 
 if [ -f "$BKP/synapse.pgdump" ]; then
   echo "Restoring database..."
@@ -77,6 +84,9 @@ if [ -f "$BKP/synapse.pgdump" ]; then
 else
   echo "No synapse.pgdump found; DB restore skipped."
 fi
+
+echo "[6/6] Starting full stack..."
+docker compose up -d 2>/dev/null || docker-compose up -d 2>/dev/null
 
 echo ""
 echo "✓ Restore complete."
