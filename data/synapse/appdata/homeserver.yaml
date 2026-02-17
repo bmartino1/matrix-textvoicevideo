@@ -1,0 +1,54 @@
+server_name: "domain_name"
+public_baseurl: "https://domain_name/"
+pid_file: /data/homeserver.pid
+web_client_location: "https://domain_name/"
+serve_server_wellknown: true
+
+listeners:
+  - port: 8008
+    tls: false
+    type: http
+    x_forwarded: true
+    bind_addresses: ['0.0.0.0']
+    resources:
+      - names: [client, federation]
+        compress: false
+
+database:
+  name: psycopg2
+  args:
+    user: synapse
+    password: "CHANGEME_POSTGRES"
+    database: synapse
+    host: matrix-postgres
+    port: 5432
+    cp_min: 5
+    cp_max: 10
+
+redis:
+  enabled: true
+  host: matrix-valkey
+  port: 6379
+
+log_config: "/data/domain_name.log.config"
+
+media_store_path: /data/media_store
+max_upload_size: 100M
+
+registration_shared_secret: "CHANGEME_REGISTRATION"
+macaroon_secret_key: "CHANGEME_SECRETKEY"
+form_secret: "CHANGEME_SECRET"
+signing_key_path: "/data/domain_name.signing.key"
+
+report_stats: false
+trusted_key_servers: []
+enable_registration: false
+allow_public_rooms_over_federation: false
+
+turn_uris:
+  - "turn:domain_name:3478?transport=udp"
+  - "turn:domain_name:3478?transport=tcp"
+  - "turns:domain_name:5349?transport=tcp"
+turn_shared_secret: "CHANGEME_SECRET"
+turn_user_lifetime: 1h
+turn_allow_guests: false
