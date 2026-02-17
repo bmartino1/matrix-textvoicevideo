@@ -40,6 +40,10 @@ sudo bash setup.sh --domain chat.yourdomain.com --reset
 ```
 
 Here is where Unraid user Will now add the Compose to the WebUI to enable necessary edits, icons and docker controls...
+<img width="421" height="385" alt="image" src="https://github.com/user-attachments/assets/2b58492a-03eb-4d7a-833d-8ac0338aae8b" />
+
+Edit Stack and open env adn compse files saving to lad web ui and hit update stack.
+
 Other Distros:
 ```bash
 # 3. Start the stack
