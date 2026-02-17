@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
+#
 # Renew Let's Encrypt certs (webroot) + reload services
-# Usage: ./scripts/certbot-renew.sh
+#
+# Usage:
+#   ./scripts/certbot-renew.sh
+#
 source "$(dirname "$0")/load-env.sh"
 
 if [ "${NO_TLS:-false}" = "true" ]; then
