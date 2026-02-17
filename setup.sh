@@ -111,38 +111,70 @@ mkdir -p "$DATA_DIR"/{postgres,synapse/appdata,synapse/media_store,coturn/config
 chmod -R 777 "$DATA_DIR"
 
 ###############################################################################
-# GENERATE .env (ONLY IF MISSING)
+# GENERATE FULL .env (overwrite on --reset or if missing)
 ###############################################################################
 
-if [ ! -f "$PROJECT_DIR/.env" ]; then
-  echo -e "${CYAN}Generating new .env...${NC}"
+if [ "$RESET" = true ] || [ ! -f "$PROJECT_DIR/.env" ]; then
+  echo -e "${CYAN}Generating full .env...${NC}"
 
   gen_secret() { openssl rand -base64 48 | tr -d '/+=\n' | head -c 48; }
   gen_pass() { openssl rand -base64 32 | tr -d '/+=\n' | head -c 32; }
 
+  POSTGRES_PASSWORD="$(gen_pass)"
+  SYN_REG="$(gen_secret)"
+  SYN_MAC="$(gen_secret)"
+  SYN_FORM="$(gen_secret)"
+  TURN_SECRET_VAL="$(gen_secret)"
+  JICOFO_PASS="$(gen_pass)"
+  JVB_PASS="$(gen_pass)"
+
   cat > "$PROJECT_DIR/.env" <<EOF
 SERVER_NAME="${DOMAIN}"
 PUBLIC_URL="https://${DOMAIN}"
-SCHEME="$( [ "$NO_TLS" = true ] && echo http || echo https )"
+SCHEME="https"
+
 EXTERNAL_IP="${EXTERNAL_IP}"
 INTERNAL_IP="${INTERNAL_IP}"
-POSTGRES_PASSWORD="$(gen_pass)"
-SYNAPSE_REGISTRATION_SECRET="$(gen_secret)"
-SYNAPSE_MACAROON_KEY="$(gen_secret)"
-SYNAPSE_FORM_SECRET="$(gen_secret)"
-TURN_SECRET="$(gen_secret)"
-JICOFO_AUTH_PASSWORD="$(gen_pass)"
-JVB_AUTH_PASSWORD="$(gen_pass)"
+
+POSTGRES_USER="synapse"
+POSTGRES_PASSWORD="${POSTGRES_PASSWORD}"
+POSTGRES_DB="synapse"
+POSTGRES_INITDB_ARGS="--encoding=UTF8 --lc-collate=C --lc-ctype=C"
+
+SYNAPSE_REGISTRATION_SECRET="${SYN_REG}"
+SYNAPSE_MACAROON_KEY="${SYN_MAC}"
+SYNAPSE_FORM_SECRET="${SYN_FORM}"
+
+TURN_SECRET="${TURN_SECRET_VAL}"
+
+NO_TLS="false"
+ADMIN_EMAIL="${ADMIN_EMAIL}"
+
 DATA_DIR="${DATA_DIR}"
 TZ="${TIMEZONE}"
-NO_TLS="${NO_TLS}"
-ADMIN_EMAIL="${ADMIN_EMAIL}"
+
+JITSI_DOMAIN="meet.${DOMAIN}"
+JITSI_PUBLIC_URL="https://meet.${DOMAIN}"
+
+JITSI_AUTH_DOMAIN="auth.meet.${DOMAIN}"
+JITSI_INTERNAL_MUC_DOMAIN="internal-muc.meet.${DOMAIN}"
+JITSI_MUC_DOMAIN="muc.meet.${DOMAIN}"
+
+JICOFO_AUTH_PASSWORD="${JICOFO_PASS}"
+JVB_AUTH_PASSWORD="${JVB_PASS}"
+
+JVB_ADVERTISE_IPS="${EXTERNAL_IP}"
+JVB_PORT="10000"
+
+JITSI_ENABLE_LETSENCRYPT="0"
+JITSI_ENABLE_HTTP_REDIRECT="0"
 EOF
 
   chmod 600 "$PROJECT_DIR/.env"
 else
   echo -e "${YELLOW}.env exists — preserving secrets.${NC}"
 fi
+
 
 ###############################################################################
 # LOAD .env
