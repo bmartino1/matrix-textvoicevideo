@@ -30,6 +30,16 @@
 #   WAN 3478  → Unraid:3478   (coturn TURN/STUN)
 #   WAN 5349  → Unraid:5349   (coturn TURNS/TLS)
 #   WAN 10000 UDP → Unraid:10000 (jitsi-jvb WebRTC media)
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# env_file NOTE (Unraid Compose Manager):
+# ─────────────────────────────────────────────────────────────────────────────
+# Unraid's Compose Manager automatically loads the .env file from the same
+# directory as docker-compose.yml — you do NOT need env_file lines.
+#
+# For all OTHER distros (Debian, Ubuntu, etc.) uncomment the
+#   # env_file: .env
+# line inside each service block below so variables resolve correctly.
 ###############################################################################
 
 networks:
@@ -42,11 +52,12 @@ networks:
 services:
 
   ###########################################################################
-  # VALKEY — Redis-compatible cache (Synapse coordination, replaces Redis)
+  # VALKEY — Redis-compatible cache (Synapse coordination)
   ###########################################################################
   valkey:
     image: valkey/valkey:latest
     container_name: matrix-valkey
+    # env_file: .env          # ← Uncomment on non-Unraid systems
     command: ["valkey-server", "--appendonly", "yes"]
     volumes:
       - ${DATA_DIR}/valkey:/data
@@ -69,6 +80,7 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: matrix-postgres
+    # env_file: .env          # ← Uncomment on non-Unraid systems
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -96,6 +108,7 @@ services:
   synapse:
     image: matrixdotorg/synapse:latest
     container_name: matrix-synapse
+    # env_file: .env          # ← Uncomment on non-Unraid systems
     depends_on:
       postgres:
         condition: service_healthy
@@ -107,7 +120,7 @@ services:
     volumes:
       - ${DATA_DIR}/synapse/appdata:/data
       - ${DATA_DIR}/synapse/media_store:/data/media_store
-      # TLS certs shared with coturn (read-only)
+      # TLS certs shared with nginx/coturn (read-only)
       - ${DATA_DIR}/nginx/certs/live/${SERVER_NAME}:/certs:ro
     networks:
       matrix-net:
@@ -125,11 +138,12 @@ services:
       net.unraid.docker.managed: "composeman"
 
   ###########################################################################
-  # ELEMENT WEB — Chat UI
+  # ELEMENT WEB — Chat UI (like Discord)
   ###########################################################################
   element-web:
     image: vectorim/element-web:latest
     container_name: matrix-element-web
+    # env_file: .env          # ← Uncomment on non-Unraid systems
     volumes:
       - ${DATA_DIR}/element-web/config/config.json:/app/config.json:ro
     networks:
@@ -147,6 +161,7 @@ services:
   coturn:
     image: coturn/coturn:latest
     container_name: matrix-coturn
+    # env_file: .env          # ← Uncomment on non-Unraid systems
     network_mode: host
     volumes:
       - ${DATA_DIR}/coturn/config/turnserver.conf:/etc/turnserver.conf:ro
@@ -164,6 +179,7 @@ services:
   nginx:
     image: nginx:alpine
     container_name: matrix-nginx
+    # env_file: .env          # ← Uncomment on non-Unraid systems
     volumes:
       - ${DATA_DIR}/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ${DATA_DIR}/nginx/html:/var/www/html:ro
@@ -185,12 +201,15 @@ services:
       net.unraid.docker.managed: "composeman"
 
   ###########################################################################
-  # CERTBOT — Auto TLS renewal (runs as a sidecar, renews every 12h)
-  # Remove the `profiles` line to always start with the stack
+  # CERTBOT — Auto TLS renewal (renews every 12h)
+  # profiles: ["tls"] means it only starts when you run:
+  #   docker compose --profile tls up -d
+  # OR remove the profiles line to always include it in the stack.
   ###########################################################################
   certbot:
     image: certbot/certbot:latest
     container_name: matrix-certbot
+    # env_file: .env          # ← Uncomment on non-Unraid systems
     profiles: ["tls"]
     volumes:
       - ${DATA_DIR}/nginx/certs:/etc/letsencrypt
@@ -202,7 +221,7 @@ services:
       net.unraid.docker.managed: "composeman"
 
 ###############################################################################
-# JITSI — Self-Hosted Video (meet.DOMAIN)
+# JITSI — Self-Hosted Video (meet.domain_name)
 # Prosody = XMPP server (Jitsi signaling)
 # Jicofo  = conference focus component
 # Web     = Jitsi Meet UI
@@ -212,6 +231,7 @@ services:
   jitsi-prosody:
     image: jitsi/prosody:stable
     container_name: jitsi-prosody
+    # env_file: .env          # ← Uncomment on non-Unraid systems
     networks:
       matrix-net:
         ipv4_address: 172.42.0.20
@@ -235,6 +255,7 @@ services:
   jitsi-jicofo:
     image: jitsi/jicofo:stable
     container_name: jitsi-jicofo
+    # env_file: .env          # ← Uncomment on non-Unraid systems
     depends_on:
       - jitsi-prosody
     networks:
@@ -257,6 +278,7 @@ services:
   jitsi-web:
     image: jitsi/web:stable
     container_name: jitsi-web
+    # env_file: .env          # ← Uncomment on non-Unraid systems
     depends_on:
       - jitsi-prosody
       - jitsi-jicofo
@@ -281,6 +303,7 @@ services:
   jitsi-jvb:
     image: jitsi/jvb:stable
     container_name: jitsi-jvb
+    # env_file: .env          # ← Uncomment on non-Unraid systems
     # host networking required — JVB must bind to the real interface for WebRTC
     network_mode: host
     depends_on:
@@ -290,7 +313,7 @@ services:
       XMPP_DOMAIN: ${JITSI_DOMAIN}
       XMPP_AUTH_DOMAIN: ${JITSI_AUTH_DOMAIN}
       XMPP_INTERNAL_MUC_DOMAIN: ${JITSI_INTERNAL_MUC_DOMAIN}
-      # jitsi-prosody uses bridge IP since JVB is on host network
+      # Uses bridge IP — JVB is host-networked so must address prosody by IP
       XMPP_SERVER: 172.42.0.20
       JVB_AUTH_PASSWORD: ${JVB_AUTH_PASSWORD}
       JVB_PORT: ${JVB_PORT}
