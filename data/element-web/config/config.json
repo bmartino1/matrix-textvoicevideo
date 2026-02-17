@@ -1,8 +1,8 @@
 {
   "default_server_config": {
     "m.homeserver": {
-      "base_url": "https://DOMAIN_NAME",
-      "server_name": "DOMAIN_NAME"
+      "base_url": "https://domain_name",
+      "server_name": "domain_name"
     }
   },
 
@@ -13,14 +13,14 @@
   "default_theme": "dark",
 
   "room_directory": {
-    "servers": ["DOMAIN_NAME"]
+    "servers": ["domain_name"]
   },
 
   "show_labs_settings": false,
   "default_country_code": "US",
 
   "jitsi": {
-    "preferred_domain": "meet.DOMAIN_NAME"
+    "preferred_domain": "meet.domain_name"
   },
 
   "jitsi_widget": {
