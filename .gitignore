@@ -2,19 +2,20 @@
 .env
 
 # Docker volume data
-data/postgres/
-data/valkey/
-data/synapse/appdata/
-data/synapse/media_store/
-data/coturn/config/
-data/element-web/config/
-data/nginx/nginx.conf
-data/nginx/certs/
-data/nginx/html/
-data/jitsi/prosody/
-data/jitsi/jicofo/
-data/jitsi/jvb/
-data/jitsi/web/
+#data/postgres/
+#data/valkey/
+#data/synapse/appdata/
+#data/synapse/media_store/
+#data/coturn/config/
+#data/element-web/config/
+#data/nginx/nginx.conf
+#data/nginx/certs/
+#data/nginx/html/
+#data/jitsi/prosody/
+#data/jitsi/jicofo/
+#data/jitsi/jvb/
+#data/jitsi/web/
+#We want gitcloie to pull theses files....
 
 # Backups
 backups/
