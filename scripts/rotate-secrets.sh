@@ -3,20 +3,14 @@ set -euo pipefail
 #
 # Rotate TURN and Jitsi secrets (safe in-place rotation)
 #
-# This will:
-#   • Generate new TURN_SECRET
-#   • Generate new JICOFO_AUTH_PASSWORD
-#   • Generate new JVB_AUTH_PASSWORD
-#   • Update .env
-#   • Update turnserver.conf
-#   • Update homeserver.yaml
-#   • Recreate coturn + jitsi + synapse containers
+# Updates:
+#   - .env (TURN_SECRET, JICOFO_AUTH_PASSWORD, JVB_AUTH_PASSWORD)
+#   - turnserver.conf (static-auth-secret)
+#   - homeserver.yaml (turn_shared_secret)
 #
-# Active voice/video calls WILL disconnect.
+# Then recreates affected services so env changes apply.
 #
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/load-env.sh"
+source "$(dirname "$0")/load-env.sh"
 
 echo "======================================================"
 echo " Secret Rotation — matrix-textvoicevideo"
@@ -36,21 +30,19 @@ NEW_JICOFO="$(gen_password)"
 NEW_JVB="$(gen_password)"
 
 echo ""
-echo "Generating new secrets..."
+echo "Updating files..."
 
 # --- Update .env ---
-echo "Updating .env ..."
-sed -i "s|^TURN_SECRET=.*|TURN_SECRET=\"${NEW_TURN}\"|"                     "$PROJECT_DIR/.env"
-sed -i "s|^JICOFO_AUTH_PASSWORD=.*|JICOFO_AUTH_PASSWORD=\"${NEW_JICOFO}\"|" "$PROJECT_DIR/.env"
-sed -i "s|^JVB_AUTH_PASSWORD=.*|JVB_AUTH_PASSWORD=\"${NEW_JVB}\"|"          "$PROJECT_DIR/.env"
-
-echo "  ✓ .env updated"
+sed -i "s|^TURN_SECRET=.*|TURN_SECRET=\"${NEW_TURN}\"|"                          "$PROJECT_DIR/.env"
+sed -i "s|^JICOFO_AUTH_PASSWORD=.*|JICOFO_AUTH_PASSWORD=\"${NEW_JICOFO}\"|"      "$PROJECT_DIR/.env"
+sed -i "s|^JVB_AUTH_PASSWORD=.*|JVB_AUTH_PASSWORD=\"${NEW_JVB}\"|"               "$PROJECT_DIR/.env"
+echo "  ✓ .env"
 
 # --- Update coturn config ---
 TURN_CONF="$DATA_DIR/coturn/config/turnserver.conf"
 if [ -f "$TURN_CONF" ]; then
   sed -i "s|^static-auth-secret=.*|static-auth-secret=${NEW_TURN}|" "$TURN_CONF"
-  echo "  ✓ turnserver.conf updated"
+  echo "  ✓ turnserver.conf"
 else
   echo "  ⚠ turnserver.conf not found — skipping"
 fi
@@ -59,17 +51,16 @@ fi
 HS_FILE="$DATA_DIR/synapse/appdata/homeserver.yaml"
 if [ -f "$HS_FILE" ]; then
   sed -i "s|^turn_shared_secret:.*|turn_shared_secret: \"${NEW_TURN}\"|" "$HS_FILE"
-  echo "  ✓ homeserver.yaml updated"
+  echo "  ✓ homeserver.yaml"
 else
   echo "  ⚠ homeserver.yaml not found — skipping"
 fi
 
 echo ""
-echo "Recreating affected containers..."
-
+echo "Recreating affected services (so new env vars apply)..."
 cd "$PROJECT_DIR"
 
-# Recreate (not just restart) so new env vars are applied
+# Recreate services that consume these secrets
 if docker compose version >/dev/null 2>&1; then
   docker compose up -d --force-recreate coturn jitsi-prosody jitsi-jicofo jitsi-jvb synapse
 else
@@ -78,10 +69,3 @@ fi
 
 echo ""
 echo "✓ Secret rotation complete."
-echo ""
-echo "New TURN_SECRET:"
-echo "  ${NEW_TURN}"
-echo ""
-echo "IMPORTANT:"
-echo "  If you have external integrations relying on TURN or Jitsi auth,"
-echo "  ensure they reload configuration."
