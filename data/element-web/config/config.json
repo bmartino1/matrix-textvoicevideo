@@ -1,0 +1,41 @@
+{
+  "default_server_config": {
+    "m.homeserver": {
+      "base_url": "https://DOMAIN_NAME",
+      "server_name": "DOMAIN_NAME"
+    }
+  },
+
+  "disable_custom_urls": true,
+  "disable_guests": true,
+
+  "brand": "Matrix Chat",
+  "default_theme": "dark",
+
+  "room_directory": {
+    "servers": ["DOMAIN_NAME"]
+  },
+
+  "show_labs_settings": false,
+  "default_country_code": "US",
+
+  "jitsi": {
+    "preferred_domain": "meet.DOMAIN_NAME"
+  },
+
+  "jitsi_widget": {
+    "skip_built_in_welcome_screen": true
+  },
+
+  "features": {
+    "feature_video_rooms": false,
+    "feature_group_calls": false,
+    "feature_element_call_video_rooms": false
+  },
+
+  "setting_defaults": {
+    "breadcrumbs": true
+  },
+
+  "map_style_url": null
+}
