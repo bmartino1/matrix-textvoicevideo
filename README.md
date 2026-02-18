@@ -3,7 +3,7 @@
 **A self-hosted, Discord-like alternative for text, voice, and video chat.**
 Built on [Matrix](https://matrix.org) + [Element Web](https://element.io) + [Jitsi](https://jitsi.org) + [Coturn](https://github.com/coturn/coturn). Optimised for [Unraid](https://unraid.net) but runs on any Docker host.
 
-Supports **10-50 concurrent users** in voice/video rooms.
+Supports **10–50 concurrent users** in voice and video rooms.
 
 ---
 
@@ -12,50 +12,62 @@ Supports **10-50 concurrent users** in voice/video rooms.
 | Service | Purpose | Network |
 |---|---|---|
 | **Synapse** | Matrix homeserver | 172.42.0.3 |
-| **PostgreSQL** | Database (C locale) | 172.42.0.2 |
+| **PostgreSQL** | Database (C locale, required by Synapse) | 172.42.0.2 |
 | **Valkey** | Redis-compatible cache | 172.42.0.7 |
-| **Element Web** | Chat UI (like Discord) | 172.42.0.4 |
+| **Element Web** | Chat UI (browser client, like Discord) | 172.42.0.4 |
 | **Jitsi Meet** | Video conference UI | 172.42.0.22 |
-| **Jitsi Prosody** | XMPP signaling | 172.42.0.20 |
-| **Jitsi Jicofo** | Conference focus | 172.42.0.21 |
+| **Jitsi Prosody** | XMPP signalling | 172.42.0.20 |
+| **Jitsi Jicofo** | Conference focus/coordinator | 172.42.0.21 |
 | **Jitsi JVB** | WebRTC media bridge | host network |
-| **Coturn** | TURN/STUN relay (NAT) | host network |
-| **Nginx** | Reverse proxy + TLS | 172.42.0.10 |
-| **Certbot** | Auto TLS renewal | — |
+| **Coturn** | TURN/STUN relay for NAT traversal | host network |
+| **Nginx** | Reverse proxy + TLS termination | 172.42.0.10 |
+| **Certbot** | Automatic TLS certificate renewal | — |
 
 ---
 
 ## Quick Start
 
 ```bash
-# 1. Clone
+# 1. Clone the repository
 git clone https://github.com/bmartino1/matrix-textvoicevideo.git /mnt/user/appdata/matrix-textvoicevideo
 chmod 777 -R /mnt/user/appdata/matrix-textvoicevideo
 cd /mnt/user/appdata/matrix-textvoicevideo
 
-# 2. Run setup (auto-detects IPs, generates all secrets, builds configs)
+# 2. Run setup — auto-detects IPs, generates all secrets, and writes all configs
 sudo bash setup.sh --domain chat.yourdomain.com --reset
-#Answer "YES" all caps no quotes...
-#cat .env to verify enverioment bare min
+# When prompted, type:  YES  (all caps, no quotes)
+
+# 3. Verify the generated environment file looks correct
+cat .env
 ```
 
-Here is where Unraid user Will now add the Compose to the WebUI to enable necessary edits, icons and docker controls...
-<img width="421" height="385" alt="image" src="https://github.com/user-attachments/assets/2b58492a-03eb-4d7a-833d-8ac0338aae8b" />
+### Unraid Users
 
-Edit Stack and open env adn compse files saving to lad web ui and hit update stack.
+After running `setup.sh`, add the stack to the Unraid Compose Manager web UI so you get Docker controls, icons, and WebUI links:
 
-Other Distros:
+1. Go to **Docker → Compose Manager** in the Unraid web UI
+2. Click **Add Stack** and point it to `/mnt/user/appdata/matrix-textvoicevideo`
+3. Open the stack, click **Edit Stack**, then open both the `.env` and `docker-compose.yml` files and save them to load the web UI
+4. Click **Update Stack** to pull images and start containers
+
+![Unraid Compose Manager](https://github.com/user-attachments/assets/2b58492a-03eb-4d7a-833d-8ac0338aae8b)
+
+### Other Distros (Debian, Ubuntu, etc.)
+
 ```bash
-# 3. Start the stack
+# Before starting, uncomment the env_file line in docker-compose.yml for each service:
+#   env_file: .env   ← remove the leading #
+
+# Start the stack
 docker compose up -d
 
-# 4. Wait ~30s, then check health
+# Wait ~30 seconds for Synapse and Postgres to initialize, then check health
 ./scripts/status.sh
 
-# 5. Create your first admin user
-./scripts/create-admin.sh admin
+# Create your first admin user
+./scripts/create-user.sh admin --admin
 
-# 6. Create regular users
+# Create additional regular users
 ./scripts/create-user.sh alice
 ./scripts/create-user.sh bob
 ```
@@ -72,16 +84,17 @@ Video calls via Jitsi at `https://meet.yourdomain.com`
 sudo bash setup.sh --domain <FQDN> [OPTIONS]
 
 Required:
-  --domain <FQDN>        Your fully qualified domain name (e.g. chat.example.com)
+  --domain <FQDN>          Your fully qualified domain name (e.g. chat.example.com)
 
 Optional:
-  --external-ip <IP>     Public WAN IP (auto-detected via curl if omitted)
-  --no-tls               Skip TLS / Let's Encrypt — HTTP only (LAN use)
-  --admin-email <email>  Let's Encrypt registration email (default: admin@DOMAIN)
-  --data-dir <path>      Data directory (default: /mnt/user/appdata/matrix-textvoicevideo/data)
-  --tz <timezone>        Timezone (default: America/Chicago)
-  --reset                WIPE ALL DATA and start fresh
-  -h, --help             Show help
+  --external-ip <IP>       Public WAN IP — auto-detected via curl if omitted
+  --no-tls                 Skip TLS / Let's Encrypt — HTTP only (LAN/testing use)
+  --admin-email <email>    Let's Encrypt registration email (default: admin@DOMAIN)
+  --data-dir <path>        Data directory (default: /mnt/user/appdata/matrix-textvoicevideo/data)
+  --tz <timezone>          Timezone (default: America/Chicago)
+  --reset                  DESTRUCTIVE: wipe all data and start fresh
+  --enable-registration    Enable open user registration (default: disabled)
+  -h, --help               Show help
 ```
 
 ### Examples
@@ -93,35 +106,43 @@ sudo bash setup.sh --domain chat.example.com
 # Specify public IP manually (if auto-detect fails)
 sudo bash setup.sh --domain chat.example.com --external-ip 203.0.113.1
 
-# LAN-only / no internet (no TLS)
+# LAN-only / no internet / no TLS
 sudo bash setup.sh --domain myserver.local --no-tls
 
-# Custom data dir (non-Unraid)
+# Custom data directory (non-Unraid)
 sudo bash setup.sh --domain chat.example.com --data-dir /opt/matrix/data
 
-# Complete wipe and reinstall
+# Complete wipe and fresh reinstall
 sudo bash setup.sh --domain chat.example.com --reset
 ```
+
+> **Re-running without `--reset`** is safe and useful — it rewrites all config files with updated values while keeping your existing `.env`, database, and signing keys intact.
 
 ---
 
 ## Admin Scripts
 
-All scripts read settings from the `.env` file generated by `setup.sh`.
+All scripts automatically read settings from the `.env` file generated by `setup.sh`. Run them from the project root directory.
 
 | Script | Usage | Purpose |
 |---|---|---|
-| `scripts/create-user.sh` | `./scripts/create-user.sh <name>` | Create a user |
-| `scripts/create-admin.sh` | `./scripts/create-admin.sh <name>` | Create an admin user |
-| `scripts/reset-password.sh` | `./scripts/reset-password.sh <name> <token>` | Reset password |
-| `scripts/list-users.sh` | `./scripts/list-users.sh <token>` | List all users |
-| `scripts/deactivate-user.sh` | `./scripts/deactivate-user.sh <name> <token>` | Disable a user |
-| `scripts/backup.sh` | `./scripts/backup.sh [dest]` | Full backup |
-| `scripts/status.sh` | `./scripts/status.sh` | Health check |
-| `scripts/rotate-secrets.sh` | `./scripts/rotate-secrets.sh` | Rotate TURN/Jitsi secrets |
+| `scripts/create-user.sh` | `./scripts/create-user.sh <name>` | Create a regular user |
+| `scripts/create-user.sh` | `./scripts/create-user.sh <name> --admin` | Create an admin user |
+| `scripts/create-admin.sh` | `./scripts/create-admin.sh <name>` | Shortcut to create an admin user |
+| `scripts/reset-password.sh` | `./scripts/reset-password.sh <name> <token>` | Reset a user's password |
+| `scripts/list-users.sh` | `./scripts/list-users.sh <token>` | List all users (active + deactivated) |
+| `scripts/deactivate-user.sh` | `./scripts/deactivate-user.sh <name> <token>` | Disable a user account |
+| `scripts/toggle-registration.sh` | `./scripts/toggle-registration.sh on` | Enable open registration |
+| `scripts/toggle-registration.sh` | `./scripts/toggle-registration.sh off` | Disable open registration |
+| `scripts/status.sh` | `./scripts/status.sh` | Full health check of all services |
+| `scripts/backup.sh` | `./scripts/backup.sh [dest]` | Full backup (DB + configs + media) |
+| `scripts/restore.sh` | `./scripts/restore.sh <backup-dir>` | Restore from a backup |
+| `scripts/certbot-init.sh` | `./scripts/certbot-init.sh` | Obtain/renew Let's Encrypt certificate |
+| `scripts/certbot-renew.sh` | `./scripts/certbot-renew.sh` | Renew existing certificate |
+| `scripts/rotate-secrets.sh` | `./scripts/rotate-secrets.sh` | Rotate TURN and Jitsi secrets |
 
-**Getting your admin access token:**
-Log into Element Web → click your username → Settings → Help & About → Access Token
+**How to get your admin access token:**
+Log into Element Web → click your username → **Settings** → **Help & About** → **Access Token**
 
 ---
 
@@ -130,10 +151,10 @@ Log into Element Web → click your username → Settings → Help & About → A
 ```bash
 make up            # Start all services
 make down          # Stop all services
-make restart       # Restart stack
-make logs          # Follow logs
-make status        # Health check
-make ps            # Container status
+make restart       # Restart the stack
+make logs          # Follow live logs
+make status        # Run health check
+make ps            # Show container status
 make create-user   # Interactive user creation
 make create-admin  # Interactive admin creation
 make backup        # Run backup
@@ -148,11 +169,11 @@ make list-users    # List users (prompts for token)
 Internet
     │
     ├── 80/443 ──► Nginx (60080/60443)
-    │                  ├── / ──────────────► Element Web  (172.42.0.4)
-    │                  ├── /_matrix ─────►  Synapse       (172.42.0.3)
-    │                  ├── /_synapse ────►  Synapse Admin (172.42.0.3)
-    │                  ├── /.well-known ─►  nginx html dir
-    │                  └── meet.DOMAIN ──►  Jitsi Web     (172.42.0.22)
+    │                  ├── /              ──► Element Web  (172.42.0.4)
+    │                  ├── /_matrix       ──► Synapse       (172.42.0.3)
+    │                  ├── /_synapse      ──► Synapse Admin (172.42.0.3)
+    │                  ├── /.well-known   ──► nginx html dir
+    │                  └── meet.DOMAIN    ──► Jitsi Web     (172.42.0.22)
     │
     ├── 3478/5349 ──► Coturn TURN/STUN (host network)
     │                  └── Voice relay for clients behind strict NAT
@@ -160,37 +181,41 @@ Internet
     └── 10000 UDP ──► Jitsi JVB (host network)
                        └── WebRTC video/audio media bridge
 
-Internal (matrix-net 172.42.0.0/24):
-    Synapse ──► PostgreSQL (172.42.0.2)
-    Synapse ──► Valkey     (172.42.0.7)
-    Jitsi Jicofo ──► Prosody (172.42.0.20)
-    Jitsi Web    ──► Prosody (172.42.0.20) [BOSH]
-    Jitsi JVB    ──► Prosody (172.42.0.20) [host → bridge IP]
+Internal network (matrix-net 172.42.0.0/24):
+    Synapse      ──► PostgreSQL  (172.42.0.2)
+    Synapse      ──► Valkey      (172.42.0.7)
+    Jitsi Jicofo ──► Prosody     (172.42.0.20)
+    Jitsi Web    ──► Prosody     (172.42.0.20)  [BOSH]
+    Jitsi JVB    ──► Prosody     (172.42.0.20)  [host → bridge IP]
 ```
 
-### Voice/Video Call Flow
+### Voice and Video Call Flow
 
 1. User clicks **Video Call** in Element Web
-2. Element Web launches a Jitsi widget pointing to `meet.DOMAIN`
-3. Jitsi Meet connects via WebSocket/BOSH to Prosody (XMPP signaling)
+2. Element Web opens a Jitsi widget pointing to `meet.DOMAIN`
+3. Jitsi Meet connects via WebSocket/BOSH to Prosody (XMPP signalling)
 4. Jicofo coordinates the conference room
-5. JVB routes audio/video between participants (WebRTC)
+5. JVB routes audio and video between participants (WebRTC)
 6. Coturn provides TURN relay for users behind strict NAT
 
 ---
 
-## Port Forwarding (Router/Firewall)
+## Port Forwarding (Router / Firewall)
 
-| External Port | Protocol | Forward To | Purpose |
-|---|---|---|---|
-| 80 | TCP | Unraid:60080 | HTTP + Let's Encrypt ACME |
-| 443 | TCP | Unraid:60443 | HTTPS (Matrix + Jitsi UI) |
-| 3478 | UDP+TCP | Unraid:3478 | TURN/STUN (voice relay) |
-| 5349 | TCP | Unraid:5349 | TURNS over TLS |
-| 49160-49250 | UDP | Unraid:49160-49250 | Coturn media ports |
-| 10000 | UDP | Unraid:10000 | Jitsi JVB WebRTC media |
+These ports must be forwarded from your router/firewall to your Unraid server's IP address.
 
-> **Unraid note:** Map WAN 80 → 60080 and WAN 443 → 60443 since ports below 1024 are typically managed by Unraid itself. Your router does the 80→60080 translation.
+| Rule Name | Protocol | External Port | Internal Port | Purpose |
+|---|---|---|---|---|
+| nginx-443 | TCP/UDP | 443 | 60443 | HTTPS — Matrix client + Jitsi UI |
+| nginx-80 | TCP/UDP | 80 | 60080 | HTTP + Let's Encrypt ACME challenge |
+| Coturn-STUN-3478 | TCP/UDP | 3478 | 3478 | TURN/STUN relay for voice |
+| CoturnTLS-5349 | TCP | 5349 | 5349 | TURNS over TLS |
+| TURNmediarelay | UDP | 49160–49250 | 49160–49250 | Coturn media relay port range |
+| jvbconference | UDP | 10000 | 10000 | Jitsi JVB WebRTC media bridge |
+
+> **Unraid note:** Ports 80 and 443 below 1024 are typically reserved by Unraid itself.
+> Map your router: **WAN 80 → Unraid:60080** and **WAN 443 → Unraid:60443**.
+> The router handles the translation — your containers see 60080/60443 internally.
 
 ---
 
@@ -201,70 +226,74 @@ chat.example.com    A    YOUR.PUBLIC.IP
 meet.example.com    A    YOUR.PUBLIC.IP
 ```
 
-> Both `chat.DOMAIN` and `meet.DOMAIN` need A records pointing to your public IP.
-> The Let's Encrypt certificate covers both domains.
+Both `chat.DOMAIN` and `meet.DOMAIN` must have A records pointing to your public IP **before** running certbot. The Let's Encrypt certificate covers both domains.
 
 ---
 
 ## Unraid Notes
 
-- Stack runs as **root** — `chmod 777` is applied to data dirs for container compatibility
+- The stack runs containers as root internally — `chmod 777` is applied to data directories for container compatibility
+- Synapse data is additionally `chown`-ed to UID `991:991` (the Synapse container user) by `setup.sh`
 - Uses `composeman` labels for Unraid Docker Manager integration
-- Deployed from `/mnt/user/appdata/matrix-textvoicevideo/` by default
-- All containers have Unraid icon labels and WebUI links configured
-- The `.env` file format is compatible with Unraid Compose Manager
+- Default data path is `/mnt/user/appdata/matrix-textvoicevideo/data`
+- All containers include Unraid icon labels and WebUI link configurations
+- The `.env` file format is fully compatible with Unraid Compose Manager — **no need to uncomment `env_file`** lines; Unraid loads `.env` automatically
 
 ---
 
 ## Security Defaults
 
-- **Registration closed** — use `scripts/create-user.sh` to add users
+- **Registration is closed by default** — use `scripts/create-user.sh` to add users, or `scripts/toggle-registration.sh on` to open it
 - All secrets generated with `openssl rand` (cryptographically secure)
-- `.env` is `chmod 600` — secrets not readable by other users
+- `.env` is `chmod 600` — secrets are not readable by other system users
 - Coturn blocks relay to all RFC 1918 private IP ranges (SSRF protection)
-- No external Matrix key servers — fully self-contained
-- Rate limiting on login, registration, and messaging
-- Password policy: 10+ chars, upper + lower + digit required
-- TLS 1.2/1.3 only, strong cipher suites, HSTS preload
+- No external Matrix key servers configured — fully self-contained federation
+- TLS 1.2/1.3 only, strong cipher suites, HSTS preload header enabled
+- If Let's Encrypt fails during setup, a self-signed certificate is automatically generated so the stack can start — replace it later by running `./scripts/certbot-init.sh` once DNS is ready
 
 ---
 
 ## Troubleshooting
 
-### Voice calls connect but no audio/video
-- Verify `EXTERNAL_IP` in `.env` is your actual public IP (not LAN IP)
-- Ensure UDP 10000 is port-forwarded to your Unraid server
-- Check Coturn: UDP 3478 and TCP 5349 must be forwarded
-- Run `./scripts/status.sh` to see which services are healthy
+### Synapse container exits immediately on first start
+- Run `setup.sh` again (no `--reset`) — it bootstraps the Synapse signing key and log config
+- Check logs: `docker compose logs matrix-synapse`
 
 ### "Cannot connect to homeserver"
 - Check DNS: `nslookup chat.yourdomain.com` should return your public IP
-- Check port forward: WAN 443 → Unraid:60443
+- Check port forwarding: WAN 443 → Unraid:60443
 - Check nginx logs: `docker compose logs matrix-nginx`
+
+### Voice calls connect but no audio or video
+- Verify `EXTERNAL_IP` in `.env` is your actual public WAN IP — not a LAN IP
+- Ensure UDP 10000 is port-forwarded to your Unraid server
+- Ensure UDP/TCP 3478 and TCP 5349 are port-forwarded for Coturn
+- Run `./scripts/status.sh` to check which services are healthy
 
 ### Jitsi video room fails to start
 - Check JVB is running: `docker compose ps jitsi-jvb`
-- `JVB_ADVERTISE_IPS` in `.env` must be your public IP
-- UDP 10000 must be forwarded
+- `JVB_ADVERTISE_IPS` in `.env` must match your public WAN IP
+- Confirm UDP 10000 is open and forwarded
 
 ### Let's Encrypt certificate fails
-- Port 80 must be publicly accessible (WAN 80 → Unraid:60080)
-- DNS A records must already point to your IP (TTL propagated)
-- Try: `docker compose logs matrix-certbot`
+- Port 80 must be publicly reachable (WAN 80 → Unraid:60080)
+- DNS A records must already be propagated before running certbot
+- Re-run after fixing DNS: `./scripts/certbot-init.sh`
+- Check certbot logs: `docker compose logs matrix-certbot`
 
-### Admin script "Could not reach Synapse"
-- Ensure the stack is running: `docker compose ps`
-- Try: `curl http://172.42.0.3:8008/_matrix/client/versions`
+### Admin script reports "Could not reach Synapse"
+- Ensure the full stack is running: `docker compose ps`
+- Test internally: `curl http://172.42.0.3:8008/_matrix/client/versions`
 
 ---
 
-## Backup & Restore
+## Backup and Restore
 
 ```bash
-# Create a backup (DB + configs + signing key + media)
+# Create a full backup (database + configs + signing key + media)
 ./scripts/backup.sh
 
-# Restore database
+# Restore the database
 docker exec -i matrix-postgres pg_restore \
   -U synapse -d synapse < backups/TIMESTAMP/synapse.pgdump
 
@@ -274,19 +303,26 @@ cp backups/TIMESTAMP/dot.env .env && chmod 600 .env
 docker compose restart
 ```
 
-> **Critical:** The `*.signing.key` file is your server's cryptographic identity.
-> Back it up regularly. If lost, federated users cannot verify your server.
+> **Critical:** The `*.signing.key` file is your server's cryptographic identity used for Matrix federation.
+> Back it up regularly. If it is lost, remote federated servers cannot verify your homeserver.
 
 ---
 
 ## Updating
 
 ```bash
-# Pull latest images
+# Always back up before updating
+./scripts/backup.sh
+
+# Pull the latest images
 docker compose pull
 
-# Restart with new images
+# Restart with the new images
 docker compose down && docker compose up -d
 ```
 
-> Run `./scripts/backup.sh` before updating.
+---
+
+## License
+
+See [LICENSE](LICENSE) for details.
