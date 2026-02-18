@@ -249,7 +249,7 @@ services:
       - ${DATA_DIR}/jitsi/prosody:/config
     restart: unless-stopped
     labels:
-      net.unraid.docker.icon: "https://cdn.jsdelivr.net/gh/selfhst/icons/png/jitsi.png"
+      net.unraid.docker.icon: "https://raw.githubusercontent.com/bmartino1/unraid-docker-templates/refs/heads/main/images/jitsi.png"
       net.unraid.docker.managed: "composeman"
 
   jitsi-jicofo:
@@ -272,7 +272,7 @@ services:
       - ${DATA_DIR}/jitsi/jicofo:/config
     restart: unless-stopped
     labels:
-      net.unraid.docker.icon: "https://cdn.jsdelivr.net/gh/selfhst/icons/png/jitsi.png"
+      net.unraid.docker.icon: "https://raw.githubusercontent.com/bmartino1/unraid-docker-templates/refs/heads/main/images/jitsi.png"
       net.unraid.docker.managed: "composeman"
 
   jitsi-web:
@@ -296,7 +296,7 @@ services:
       - ${DATA_DIR}/jitsi/web:/config
     restart: unless-stopped
     labels:
-      net.unraid.docker.icon: "https://cdn.jsdelivr.net/gh/selfhst/icons/png/jitsi.png"
+      net.unraid.docker.icon: "https://raw.githubusercontent.com/bmartino1/unraid-docker-templates/refs/heads/main/images/jitsi.png"
       net.unraid.docker.webui: "https://[IP]:[PORT:60443]"
       net.unraid.docker.managed: "composeman"
 
@@ -322,5 +322,5 @@ services:
       - ${DATA_DIR}/jitsi/jvb:/config
     restart: unless-stopped
     labels:
-      net.unraid.docker.icon: "https://cdn.jsdelivr.net/gh/selfhst/icons/png/jitsi.png"
+      net.unraid.docker.icon: "https://raw.githubusercontent.com/bmartino1/unraid-docker-templates/refs/heads/main/images/jitsi.png"
       net.unraid.docker.managed: "composeman"
