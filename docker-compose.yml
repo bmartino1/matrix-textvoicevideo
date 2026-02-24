@@ -5,6 +5,13 @@
 # Text · Voice (Coturn) · Video (Jitsi) · 10-50 concurrent users
 #
 # ─────────────────────────────────────────────────────────────────────────────
+# QUICK START
+# ─────────────────────────────────────────────────────────────────────────────
+#   1. Copy .env.example to .env and fill in all values
+#   2. Run scripts/certbot-init.sh to obtain your TLS certificate
+#   3. docker compose up -d
+#
+# ─────────────────────────────────────────────────────────────────────────────
 # BRIDGE NETWORK (matrix-net 172.42.0.0/24) — static IPs
 # ─────────────────────────────────────────────────────────────────────────────
 #   valkey          172.42.0.7
@@ -19,27 +26,46 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # HOST NETWORK containers (require host networking for WebRTC/TURN)
 # ─────────────────────────────────────────────────────────────────────────────
-#   coturn          host (3478/5349)
-#   jitsi-jvb       host (UDP 10000)
+#   coturn          host (ports 3478/5349)
+#   jitsi-jvb       host (port UDP 10000)
 #
 # ─────────────────────────────────────────────────────────────────────────────
-# EXPOSED PORTS (map your router: WAN → Unraid)
+# EXPOSED PORTS — configure your router to forward these:
 # ─────────────────────────────────────────────────────────────────────────────
-#   WAN 443   → Unraid:60443  (nginx HTTPS)
-#   WAN 80    → Unraid:60080  (nginx HTTP / ACME)
-#   WAN 3478  → Unraid:3478   (coturn TURN/STUN)
-#   WAN 5349  → Unraid:5349   (coturn TURNS/TLS)
-#   WAN 10000 UDP → Unraid:10000 (jitsi-jvb WebRTC media)
+#   WAN :80    → Unraid IP :60080   (nginx HTTP / Let's Encrypt ACME)
+#   WAN :443   → Unraid IP :60443   (nginx HTTPS)
+#   WAN :3478  → Unraid IP :3478    (coturn TURN/STUN)
+#   WAN :5349  → Unraid IP :5349    (coturn TURNS over TLS)
+#   WAN :10000 → Unraid IP :10000   (jitsi-jvb WebRTC media, UDP)
+#
+#   WHY 60080/60443 and not 80/443?
+#   Unraid's own web GUI occupies host ports 80 and 443, so nginx must
+#   use alternate host ports.  Your router NAT bridges the gap externally.
 #
 # ─────────────────────────────────────────────────────────────────────────────
-# env_file NOTE (Unraid Compose Manager):
+# .env / env_file NOTE
 # ─────────────────────────────────────────────────────────────────────────────
-# Unraid's Compose Manager automatically loads the .env file from the same
-# directory as docker-compose.yml — you do NOT need env_file lines.
+#   Unraid Compose Manager automatically loads the .env file sitting next to
+#   this docker-compose.yml — you do NOT need env_file lines on Unraid.
 #
-# For all OTHER distros (Debian, Ubuntu, etc.) uncomment the
-#   # env_file: .env
-# line inside each service block below so variables resolve correctly.
+#   On all other systems (Debian, Ubuntu, Proxmox, etc.) uncomment every
+#     # env_file: .env
+#   line below so that variables are injected into each container correctly.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# TLS CERTIFICATES
+# ─────────────────────────────────────────────────────────────────────────────
+#   Initial issuance : run scripts/certbot-init.sh  (interactive, one-time)
+#   Renewal          : run scripts/certbot-renew.sh (monthly cron recommended)
+#
+#   Unraid User Scripts cron example (monthly at 03:00 on the 1st):
+#     0 3 1 * *  /mnt/user/appdata/matrix-textvoicevideo/scripts/certbot-renew.sh
+#
+#   The certbot service at the bottom of this file uses profile "tls" so it
+#   does NOT start automatically with `docker compose up -d`.
+#   To run a one-off renewal via compose:
+#     docker compose --profile tls up certbot
+#
 ###############################################################################
 
 networks:
@@ -52,7 +78,7 @@ networks:
 services:
 
   ###########################################################################
-  # VALKEY — Redis-compatible cache (Synapse coordination)
+  # VALKEY — Redis-compatible cache used by Synapse for coordination
   ###########################################################################
   valkey:
     image: valkey/valkey:latest
@@ -75,7 +101,10 @@ services:
       net.unraid.docker.managed: "composeman"
 
   ###########################################################################
-  # POSTGRES — Database (C locale required by Synapse)
+  # POSTGRES — Database backend for Synapse
+  #
+  # IMPORTANT: Synapse requires the database to use C locale.
+  # POSTGRES_INITDB_ARGS is set in .env — do not change the locale settings.
   ###########################################################################
   postgres:
     image: postgres:16-alpine
@@ -104,6 +133,13 @@ services:
 
   ###########################################################################
   # SYNAPSE — Matrix Homeserver
+  #
+  # Config lives in DATA_DIR/synapse/appdata/homeserver.yaml
+  # Generate an initial config with:
+  #   docker run --rm -v /your/data/synapse:/data \
+  #     matrixdotorg/synapse:latest generate
+  #
+  # TLS certs are mounted read-only — Synapse uses them for federation.
   ###########################################################################
   synapse:
     image: matrixdotorg/synapse:latest
@@ -120,7 +156,6 @@ services:
     volumes:
       - ${DATA_DIR}/synapse/appdata:/data
       - ${DATA_DIR}/synapse/media_store:/data/media_store
-      # TLS certs shared with nginx/coturn (read-only)
       - ${DATA_DIR}/nginx/certs/live/${SERVER_NAME}:/certs:ro
     networks:
       matrix-net:
@@ -138,7 +173,18 @@ services:
       net.unraid.docker.managed: "composeman"
 
   ###########################################################################
-  # ELEMENT WEB — Chat UI (like Discord)
+  # ELEMENT WEB — Matrix chat UI (the "Discord" front-end)
+  #
+  # Config: DATA_DIR/element-web/config/config.json
+  # Minimal config.json example:
+  #   {
+  #     "default_server_config": {
+  #       "m.homeserver": {
+  #         "base_url": "https://YOUR_MATRIX_DOMAIN",
+  #         "server_name": "YOUR_SERVER_NAME"
+  #       }
+  #     }
+  #   }
   ###########################################################################
   element-web:
     image: vectorim/element-web:latest
@@ -155,8 +201,20 @@ services:
       net.unraid.docker.managed: "composeman"
 
   ###########################################################################
-  # COTURN — TURN/STUN relay for NAT traversal (voice call fallback)
-  # Uses host networking so it can bind to the real network interface
+  # COTURN — TURN/STUN server for NAT traversal (voice call media relay)
+  #
+  # Uses host networking so it can bind directly to the real network
+  # interface — required for TURN to work correctly.
+  #
+  # Config: DATA_DIR/coturn/config/turnserver.conf
+  # Key settings to verify in turnserver.conf:
+  #   listening-port=3478
+  #   tls-listening-port=5349
+  #   cert=/certs/fullchain.pem
+  #   pkey=/certs/privkey.pem
+  #   realm=YOUR_DOMAIN
+  #   use-auth-secret
+  #   static-auth-secret=YOUR_TURN_SECRET   ← match TURN_SECRET in .env
   ###########################################################################
   coturn:
     image: coturn/coturn:latest
@@ -174,7 +232,18 @@ services:
 
   ###########################################################################
   # NGINX — Reverse Proxy + TLS Termination
-  # Handles: Matrix API, Element Web, Jitsi Web, .well-known
+  #
+  # Handles routing for: Matrix API, Element Web, Jitsi Web, .well-known
+  #
+  # HOST PORTS (Unraid-specific — see header for why):
+  #   60080 → container :80   (HTTP, used for ACME challenge redirect)
+  #   60443 → container :443  (HTTPS, all user traffic)
+  #
+  # Config: DATA_DIR/nginx/nginx.conf
+  # Certs:  DATA_DIR/nginx/certs/live/YOUR_DOMAIN/{fullchain,privkey}.pem
+  #
+  # NOTE: During certificate renewal, certbot-renew.sh will stop this
+  # container briefly so it can bind port 60080 for the ACME challenge.
   ###########################################################################
   nginx:
     image: nginx:alpine
@@ -188,8 +257,8 @@ services:
       matrix-net:
         ipv4_address: 172.42.0.10
     ports:
-      - "60080:80"
-      - "60443:443"
+      - "60080:80"    # WAN:80 → router NAT → Unraid:60080 → nginx:80
+      - "60443:443"   # WAN:443 → router NAT → Unraid:60443 → nginx:443
     depends_on:
       - synapse
       - element-web
@@ -200,14 +269,17 @@ services:
       net.unraid.docker.webui: "https://[IP]:[PORT:60443]"
       net.unraid.docker.managed: "composeman"
 
-###############################################################################
-# JITSI — Self-Hosted Video (meet.domain_name)
-# Prosody = XMPP server (Jitsi signaling)
-# Jicofo  = conference focus component
-# Web     = Jitsi Meet UI
-# JVB     = Video Bridge (WebRTC media) — host networking required
-###############################################################################
+  ###########################################################################
+  # JITSI — Self-Hosted Video Conferencing (meet.YOUR_DOMAIN)
+  #
+  # Four components:
+  #   prosody  — XMPP signaling server
+  #   jicofo   — conference focus / room manager
+  #   web      — Jitsi Meet browser UI
+  #   jvb      — Video Bridge (actual WebRTC media, host networking)
+  ###########################################################################
 
+  # ── Prosody (XMPP) ────────────────────────────────────────────────────────
   jitsi-prosody:
     image: jitsi/prosody:stable
     container_name: jitsi-prosody
@@ -223,8 +295,8 @@ services:
       XMPP_INTERNAL_MUC_DOMAIN: ${JITSI_INTERNAL_MUC_DOMAIN}
       JICOFO_AUTH_PASSWORD: ${JICOFO_AUTH_PASSWORD}
       JVB_AUTH_PASSWORD: ${JVB_AUTH_PASSWORD}
-      ENABLE_AUTH: "0"
-      ENABLE_GUESTS: "1"
+      ENABLE_AUTH: "0"    # Set to "1" to require login for meetings
+      ENABLE_GUESTS: "1"  # Set to "0" to disallow anonymous guests
     volumes:
       - ${DATA_DIR}/jitsi/prosody:/config
     restart: unless-stopped
@@ -232,6 +304,7 @@ services:
       net.unraid.docker.icon: "https://raw.githubusercontent.com/bmartino1/unraid-docker-templates/refs/heads/main/images/jitsi.png"
       net.unraid.docker.managed: "composeman"
 
+  # ── Jicofo (conference focus) ──────────────────────────────────────────────
   jitsi-jicofo:
     image: jitsi/jicofo:stable
     container_name: jitsi-jicofo
@@ -255,6 +328,7 @@ services:
       net.unraid.docker.icon: "https://raw.githubusercontent.com/bmartino1/unraid-docker-templates/refs/heads/main/images/jitsi.png"
       net.unraid.docker.managed: "composeman"
 
+  # ── Jitsi Web (browser UI) ─────────────────────────────────────────────────
   jitsi-web:
     image: jitsi/web:stable
     container_name: jitsi-web
@@ -280,11 +354,14 @@ services:
       net.unraid.docker.webui: "https://[IP]:[PORT:60443]"
       net.unraid.docker.managed: "composeman"
 
+  # ── JVB — Jitsi Video Bridge (WebRTC media relay) ─────────────────────────
+  # Uses host networking — JVB must bind directly to the real network
+  # interface so WebRTC peers can reach it on UDP :10000.
+  # JVB_ADVERTISE_IPS must be set to your PUBLIC WAN IP in .env.
   jitsi-jvb:
     image: jitsi/jvb:stable
     container_name: jitsi-jvb
     # env_file: .env          # ← Uncomment on non-Unraid systems
-    # host networking required — JVB must bind to the real interface for WebRTC
     network_mode: host
     depends_on:
       - jitsi-prosody
@@ -293,11 +370,10 @@ services:
       XMPP_DOMAIN: ${JITSI_DOMAIN}
       XMPP_AUTH_DOMAIN: ${JITSI_AUTH_DOMAIN}
       XMPP_INTERNAL_MUC_DOMAIN: ${JITSI_INTERNAL_MUC_DOMAIN}
-      # Uses bridge IP — JVB is host-networked so must address prosody by IP
-      XMPP_SERVER: 172.42.0.20
+      XMPP_SERVER: 172.42.0.20  # Static IP — JVB is host-networked, cannot use container name
       JVB_AUTH_PASSWORD: ${JVB_AUTH_PASSWORD}
       JVB_PORT: ${JVB_PORT}
-      JVB_ADVERTISE_IPS: ${JVB_ADVERTISE_IPS}
+      JVB_ADVERTISE_IPS: ${JVB_ADVERTISE_IPS}  # Set to your public WAN IP
     volumes:
       - ${DATA_DIR}/jitsi/jvb:/config
     restart: unless-stopped
@@ -305,47 +381,45 @@ services:
       net.unraid.docker.icon: "https://raw.githubusercontent.com/bmartino1/unraid-docker-templates/refs/heads/main/images/jitsi.png"
       net.unraid.docker.managed: "composeman"
 
-
   ###########################################################################
-  # CERTBOT — Auto TLS renewal (renews every 12h)
-  # profiles: ["tls"] means it only starts when you run:
-  #   docker compose --profile tls up -d
-  # OR remove the profiles line to always include it in the stack.
+  # CERTBOT — TLS Certificate Renewal
+  #
+  # profiles: ["tls"] — this service does NOT start with `docker compose up -d`
+  # It only runs when explicitly triggered:
+  #   docker compose --profile tls up certbot
+  #
+  # ── UNRAID USERS ──────────────────────────────────────────────────────────
+  # The recommended renewal method on Unraid is a monthly cron via the
+  # "User Scripts" plugin, which runs scripts/certbot-renew.sh.
+  # That script safely stops nginx (freeing port 60080), runs certbot,
+  # then restarts nginx automatically.
+  #
+  # Cron schedule (User Scripts / root crontab):
+  #   0 3 1 * *  /mnt/user/appdata/matrix-textvoicevideo/scripts/certbot-renew.sh
+  #
+  # ── NON-UNRAID USERS (standard 80/443) ───────────────────────────────────
+  # If nginx is on standard ports 80/443, you can use the webroot method
+  # instead (nginx stays running). Replace the entrypoint below with:
+  #   entrypoint: /bin/sh -c 'trap exit TERM; while :; do certbot renew
+  #     --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done'
+  # And remove the ports block — no port binding needed for webroot.
+  #
+  # ── HOW THE UNRAID STANDALONE METHOD WORKS ───────────────────────────────
+  # 1. This container binds host :60080 (→ container :80)
+  # 2. Your router NAT forwards WAN:80 → Unraid:60080
+  # 3. Let's Encrypt reaches certbot via that path for the HTTP-01 challenge
+  # 4. nginx MUST be stopped first (also uses host :60080)
+  #    → certbot-renew.sh handles stop/start automatically
   ###########################################################################
-
-  # =============================================================================
-#  docker-compose certbot service — Unraid 60080/60443 topology
-#
-#  IMPORTANT: The compose-based auto-renew certbot service is DISABLED by
-#  default on Unraid because it needs to stop nginx (to free port 60080)
-#  before each renewal attempt, which the "while :; sleep 12h" loop below
-#  cannot safely do on its own.
-#
-#  RECOMMENDED APPROACH on Unraid:
-#    Use the Unraid "User Scripts" plugin to run certbot-renew.sh monthly.
-#    Example schedule: 0 3 1 * *  (3 AM on the 1st of every month)
-#    Script: /mnt/user/appdata/matrix-textvoicevideo/scripts/certbot-renew.sh
-#
-#  The service below is provided for non-Unraid deployments or environments
-#  where nginx is on standard ports 80/443 (no stop/start needed).
-#  On those systems: uncomment and remove the profiles line.
-# =============================================================================
-
   certbot:
     image: certbot/certbot:latest
     container_name: matrix-certbot
-    profiles: ["tls"]          # Remove this line on standard 80/443 systems
+    profiles: ["tls"]
     volumes:
       - ${DATA_DIR}/nginx/certs:/etc/letsencrypt
       - ${DATA_DIR}/nginx/html:/var/www/certbot
-    # ── Standard (non-Unraid) renewal loop ───────────────────────────────────
-    # Uses webroot method — nginx must be running and serving /.well-known/
-    # entrypoint: /bin/sh -c 'trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done'
-
-    # ── Unraid workaround: standalone renewal via 60080 ──────────────────────
-    # This stops nginx, binds :60080, renews, then exits.
-    # On Unraid, trigger this manually or via User Scripts rather than
-    # relying on the loop, since it cannot restart nginx from inside compose.
+    ports:
+      - "60080:80"    # Must match nginx HTTP port — nginx must be stopped first!
     entrypoint: >
       /bin/sh -c '
         trap exit TERM;
@@ -358,20 +432,7 @@ services:
           sleep 12h & wait $${!};
         done
       '
-    # Port mapping: host 60080 → container 80
-    # This lets Let's Encrypt reach the container via your router NAT (WAN:80 → Unraid:60080)
-    ports:
-      - "60080:80"
     restart: unless-stopped
     labels:
       net.unraid.docker.icon: "https://cdn.jsdelivr.net/gh/selfhst/icons/png/lets-encrypt.png"
       net.unraid.docker.managed: "composeman"
-
-#TLS
-
-# =============================================================================
-#  NOTE: If you use the compose certbot service on Unraid, you MUST ensure
-#  nginx is stopped before this container tries to renew (so it can bind
-#  port 60080).  The safest approach remains the User Scripts cron method
-#  using certbot-renew.sh which handles the stop/start automatically.
-# =============================================================================
