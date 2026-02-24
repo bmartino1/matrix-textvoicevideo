@@ -200,26 +200,6 @@ services:
       net.unraid.docker.webui: "https://[IP]:[PORT:60443]"
       net.unraid.docker.managed: "composeman"
 
-  ###########################################################################
-  # CERTBOT — Auto TLS renewal (renews every 12h)
-  # profiles: ["tls"] means it only starts when you run:
-  #   docker compose --profile tls up -d
-  # OR remove the profiles line to always include it in the stack.
-  ###########################################################################
-  certbot:
-    image: certbot/certbot:latest
-    container_name: matrix-certbot
-    # env_file: .env          # ← Uncomment on non-Unraid systems
-    profiles: ["tls"]
-    volumes:
-      - ${DATA_DIR}/nginx/certs:/etc/letsencrypt
-      - ${DATA_DIR}/nginx/html:/var/www/certbot
-    entrypoint: /bin/sh -c 'trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done'
-    restart: unless-stopped
-    labels:
-      net.unraid.docker.icon: "https://cdn.jsdelivr.net/gh/selfhst/icons/png/lets-encrypt.png"
-      net.unraid.docker.managed: "composeman"
-
 ###############################################################################
 # JITSI — Self-Hosted Video (meet.domain_name)
 # Prosody = XMPP server (Jitsi signaling)
@@ -324,3 +304,74 @@ services:
     labels:
       net.unraid.docker.icon: "https://raw.githubusercontent.com/bmartino1/unraid-docker-templates/refs/heads/main/images/jitsi.png"
       net.unraid.docker.managed: "composeman"
+
+
+  ###########################################################################
+  # CERTBOT — Auto TLS renewal (renews every 12h)
+  # profiles: ["tls"] means it only starts when you run:
+  #   docker compose --profile tls up -d
+  # OR remove the profiles line to always include it in the stack.
+  ###########################################################################
+
+  # =============================================================================
+#  docker-compose certbot service — Unraid 60080/60443 topology
+#
+#  IMPORTANT: The compose-based auto-renew certbot service is DISABLED by
+#  default on Unraid because it needs to stop nginx (to free port 60080)
+#  before each renewal attempt, which the "while :; sleep 12h" loop below
+#  cannot safely do on its own.
+#
+#  RECOMMENDED APPROACH on Unraid:
+#    Use the Unraid "User Scripts" plugin to run certbot-renew.sh monthly.
+#    Example schedule: 0 3 1 * *  (3 AM on the 1st of every month)
+#    Script: /mnt/user/appdata/matrix-textvoicevideo/scripts/certbot-renew.sh
+#
+#  The service below is provided for non-Unraid deployments or environments
+#  where nginx is on standard ports 80/443 (no stop/start needed).
+#  On those systems: uncomment and remove the profiles line.
+# =============================================================================
+
+  certbot:
+    image: certbot/certbot:latest
+    container_name: matrix-certbot
+    profiles: ["tls"]          # Remove this line on standard 80/443 systems
+    volumes:
+      - ${DATA_DIR}/nginx/certs:/etc/letsencrypt
+      - ${DATA_DIR}/nginx/html:/var/www/certbot
+    # ── Standard (non-Unraid) renewal loop ───────────────────────────────────
+    # Uses webroot method — nginx must be running and serving /.well-known/
+    # entrypoint: /bin/sh -c 'trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done'
+
+    # ── Unraid workaround: standalone renewal via 60080 ──────────────────────
+    # This stops nginx, binds :60080, renews, then exits.
+    # On Unraid, trigger this manually or via User Scripts rather than
+    # relying on the loop, since it cannot restart nginx from inside compose.
+    entrypoint: >
+      /bin/sh -c '
+        trap exit TERM;
+        while :; do
+          certbot renew
+            --standalone
+            --http-01-port 80
+            --preferred-challenges http
+            --quiet;
+          sleep 12h & wait $${!};
+        done
+      '
+    # Port mapping: host 60080 → container 80
+    # This lets Let's Encrypt reach the container via your router NAT (WAN:80 → Unraid:60080)
+    ports:
+      - "60080:80"
+    restart: unless-stopped
+    labels:
+      net.unraid.docker.icon: "https://cdn.jsdelivr.net/gh/selfhst/icons/png/lets-encrypt.png"
+      net.unraid.docker.managed: "composeman"
+
+#TLS
+
+# =============================================================================
+#  NOTE: If you use the compose certbot service on Unraid, you MUST ensure
+#  nginx is stopped before this container tries to renew (so it can bind
+#  port 60080).  The safest approach remains the User Scripts cron method
+#  using certbot-renew.sh which handles the stop/start automatically.
+# =============================================================================
