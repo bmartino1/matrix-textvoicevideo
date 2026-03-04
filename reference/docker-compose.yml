@@ -1,0 +1,311 @@
+###############################################################################
+# matrix-textvoicevideo — docker-compose TEMPLATE
+#
+# This file lives in reference/ and is a TEMPLATE.
+# setup.sh reads it, replaces placeholders, and writes
+# the runnable docker-compose.yml into the project root.
+#
+# Placeholders replaced by setup.sh:
+#   __SERVER_NAME__   → base domain (e.g. example.com)
+#   __MEET_DOMAIN__   → meet.<domain>
+#   __TURN_DOMAIN__   → turn.<domain>
+#   __EXTERNAL_IP__   → public WAN IP
+#   __INTERNAL_IP__   → LAN IP
+#
+# Variables using ${...} are resolved by Docker Compose from .env at runtime.
+###############################################################################
+
+networks:
+  matrix-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.42.0.0/24
+
+services:
+
+  ##############################################
+  # Valkey (Redis-compatible) — Synapse cache
+  ##############################################
+  matrix-valkey:
+    image: valkey/valkey:8-alpine
+    container_name: matrix-valkey
+    restart: unless-stopped
+    networks:
+      matrix-net:
+        ipv4_address: 172.42.0.7
+    volumes:
+      - ${DATA_DIR}/valkey:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    labels:
+      net.unraid.docker.icon: "https://raw.githubusercontent.com/SnuK87/unraid-templates/refs/heads/main/icons/valkey-logo.png"
+      net.unraid.docker.managed: "composeman"
+
+
+  ##############################################
+  # PostgreSQL — Synapse database
+  ##############################################
+  matrix-postgres:
+    image: postgres:16-alpine
+    container_name: matrix-postgres
+    restart: unless-stopped
+    user: "999:999"
+    networks:
+      matrix-net:
+        ipv4_address: 172.42.0.2
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    volumes:
+      - ${DATA_DIR}/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    labels:
+      net.unraid.docker.icon: "https://cdn.jsdelivr.net/gh/selfhst/icons/png/postgresql.png"
+      net.unraid.docker.managed: "composeman"
+
+
+  ##############################################
+  # Synapse — Matrix homeserver
+  ##############################################
+  matrix-synapse:
+    image: matrixdotorg/synapse:latest
+    container_name: matrix-synapse
+    restart: unless-stopped
+    user: "991:991"
+    networks:
+      matrix-net:
+        ipv4_address: 172.42.0.3
+    environment:
+      TZ: ${TZ}
+    volumes:
+      - ${DATA_DIR}/synapse/appdata:/data
+      - ${DATA_DIR}/synapse/media_store:/data/media_store
+    depends_on:
+      matrix-postgres:
+        condition: service_healthy
+      matrix-valkey:
+        condition: service_healthy
+    labels:
+      net.unraid.docker.icon: "https://cdn.jsdelivr.net/gh/selfhst/icons/png/matrix.png"
+      net.unraid.docker.webui: "http://[IP]:[PORT:60080]"
+      net.unraid.docker.managed: "composeman"
+
+
+  ##############################################
+  # Element Web — Matrix web client
+  ##############################################
+  matrix-element-web:
+    image: vectorim/element-web:latest
+    container_name: matrix-element-web
+    restart: unless-stopped
+    networks:
+      matrix-net:
+        ipv4_address: 172.42.0.4
+    volumes:
+      - ${DATA_DIR}/element-web/config/config.json:/app/config.json:ro
+    labels:
+      net.unraid.docker.icon: "https://cdn.jsdelivr.net/gh/selfhst/icons/png/element.png"
+      net.unraid.docker.managed: "composeman"
+
+
+  ##############################################
+  # Coturn — TURN/STUN relay for NAT traversal
+  ##############################################
+  matrix-coturn:
+    image: coturn/coturn:latest
+    container_name: matrix-coturn
+    restart: unless-stopped
+    networks:
+      matrix-net:
+        ipv4_address: 172.42.0.15
+    ports:
+      # STUN/TURN UDP listener (standard port)
+      - "3478:3478/udp"
+      - "3478:3478/tcp"
+      # TLS TURN listener — when using --behind-proxy or --no-tls, expose directly.
+      # In --https mode, nginx stream block on :443 SNI-routes turn.DOMAIN here.
+      - "5349:5349/tcp"
+      # Media relay port range
+      - "49160-49250:49160-49250/udp"
+    volumes:
+      - ${DATA_DIR}/coturn/config/turnserver.conf:/etc/coturn/turnserver.conf:ro
+      - ${DATA_DIR}/nginx/certs/live/__SERVER_NAME__/fullchain.pem:/certs/fullchain.pem:ro
+      - ${DATA_DIR}/nginx/certs/live/__SERVER_NAME__/privkey.pem:/certs/privkey.pem:ro
+    labels:
+      net.unraid.docker.icon: "https://raw.githubusercontent.com/xthursdayx/docker-templates/master/xthursdayx/images/webrtc-icon.png"
+      net.unraid.docker.managed: "composeman"
+
+
+  ##############################################
+  # Nginx — reverse proxy (internal to stack)
+  ##############################################
+  matrix-nginx:
+    image: nginx:alpine
+    container_name: matrix-nginx
+    restart: unless-stopped
+    networks:
+      matrix-net:
+        ipv4_address: 172.42.0.10
+    ports:
+      - "60080:80"
+      - "60443:443"
+    volumes:
+      - ${DATA_DIR}/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ${DATA_DIR}/nginx/html:/var/www/html:ro
+      - ${DATA_DIR}/nginx/html:/var/www/certbot:ro
+      - ${DATA_DIR}/nginx/certs:/etc/nginx/certs:ro
+    depends_on:
+      - matrix-synapse
+      - matrix-element-web
+      - jitsi-web
+    labels:
+      net.unraid.docker.icon: "https://nginxproxymanager.com/icon.png"
+      net.unraid.docker.webui: "https://[IP]:[PORT:60443]"
+      net.unraid.docker.managed: "composeman"
+
+
+  ##############################################
+  # Jitsi Prosody — XMPP server for Jitsi
+  ##############################################
+  jitsi-prosody:
+    image: jitsi/prosody:stable
+    container_name: jitsi-prosody
+    restart: unless-stopped
+    networks:
+      matrix-net:
+        ipv4_address: 172.42.0.20
+    environment:
+      TZ: ${TZ}
+      PUBLIC_URL: "https://__MEET_DOMAIN__"
+      XMPP_DOMAIN: __MEET_DOMAIN__
+      XMPP_AUTH_DOMAIN: "auth.__MEET_DOMAIN__"
+      XMPP_GUEST_DOMAIN: "guest.__MEET_DOMAIN__"
+      XMPP_MUC_DOMAIN: "muc.__MEET_DOMAIN__"
+      XMPP_INTERNAL_MUC_DOMAIN: "internal-muc.__MEET_DOMAIN__"
+      XMPP_MODULES: ""
+      XMPP_MUC_MODULES: ""
+      XMPP_RECORDER_DOMAIN: "recorder.__MEET_DOMAIN__"
+      JICOFO_AUTH_USER: focus
+      JICOFO_AUTH_PASSWORD: ${JICOFO_AUTH_PASSWORD}
+      JVB_AUTH_USER: jvb
+      JVB_AUTH_PASSWORD: ${JVB_AUTH_PASSWORD}
+      ENABLE_AUTH: "1"
+      AUTH_TYPE: internal
+      ENABLE_GUESTS: "1"
+      ENABLE_LOBBY: "1"
+    volumes:
+      - ${DATA_DIR}/jitsi/prosody:/config
+      - ${DATA_DIR}/jitsi/prosody/prosody-plugins-custom:/prosody-plugins-custom
+    labels:
+      net.unraid.docker.icon: "https://raw.githubusercontent.com/bmartino1/unraid-docker-templates/refs/heads/main/images/jitsi.png"
+      net.unraid.docker.managed: "composeman"
+
+
+  ##############################################
+  # Jitsi Jicofo — conference focus
+  ##############################################
+  jitsi-jicofo:
+    image: jitsi/jicofo:stable
+    container_name: jitsi-jicofo
+    restart: unless-stopped
+    networks:
+      matrix-net:
+        ipv4_address: 172.42.0.21
+    environment:
+      TZ: ${TZ}
+      XMPP_DOMAIN: __MEET_DOMAIN__
+      XMPP_AUTH_DOMAIN: "auth.__MEET_DOMAIN__"
+      XMPP_MUC_DOMAIN: "muc.__MEET_DOMAIN__"
+      XMPP_INTERNAL_MUC_DOMAIN: "internal-muc.__MEET_DOMAIN__"
+      XMPP_SERVER: "172.42.0.20"
+      JICOFO_AUTH_USER: focus
+      JICOFO_AUTH_PASSWORD: ${JICOFO_AUTH_PASSWORD}
+      JICOFO_ENABLE_AUTH: "1"
+      AUTH_TYPE: internal
+    volumes:
+      - ${DATA_DIR}/jitsi/jicofo/config:/config
+    depends_on:
+      - jitsi-prosody
+    labels:
+      net.unraid.docker.icon: "https://raw.githubusercontent.com/bmartino1/unraid-docker-templates/refs/heads/main/images/jitsi.png"
+      net.unraid.docker.managed: "composeman"
+
+
+  ##############################################
+  # Jitsi Web — Jitsi Meet frontend
+  ##############################################
+  jitsi-web:
+    image: jitsi/web:stable
+    container_name: jitsi-web
+    restart: unless-stopped
+    networks:
+      matrix-net:
+        ipv4_address: 172.42.0.22
+    environment:
+      TZ: ${TZ}
+      PUBLIC_URL: "https://__MEET_DOMAIN__"
+      XMPP_DOMAIN: __MEET_DOMAIN__
+      XMPP_AUTH_DOMAIN: "auth.__MEET_DOMAIN__"
+      XMPP_GUEST_DOMAIN: "guest.__MEET_DOMAIN__"
+      XMPP_MUC_DOMAIN: "muc.__MEET_DOMAIN__"
+      XMPP_BOSH_URL_BASE: "http://172.42.0.20:5280"
+      ENABLE_AUTH: "1"
+      AUTH_TYPE: internal
+      ENABLE_GUESTS: "1"
+    volumes:
+      - ${DATA_DIR}/jitsi/web/config:/config
+      - ${DATA_DIR}/jitsi/web/custom-config.js:/config/custom-config.js:ro
+    depends_on:
+      - jitsi-prosody
+    labels:
+      net.unraid.docker.icon: "https://raw.githubusercontent.com/bmartino1/unraid-docker-templates/refs/heads/main/images/jitsi.png"
+      net.unraid.docker.webui: "https://[IP]:[PORT:60443]"
+      net.unraid.docker.managed: "composeman"
+
+
+  ##############################################
+  # Jitsi JVB — video bridge (media relay)
+  ##############################################
+  jitsi-jvb:
+    image: jitsi/jvb:stable
+    container_name: jitsi-jvb
+    restart: unless-stopped
+    networks:
+      matrix-net:
+        ipv4_address: 172.42.0.23
+    ports:
+      # WebRTC media UDP — MUST be exposed for video/audio to flow
+      - "10000:10000/udp"
+    environment:
+      TZ: ${TZ}
+      XMPP_DOMAIN: __MEET_DOMAIN__
+      XMPP_AUTH_DOMAIN: "auth.__MEET_DOMAIN__"
+      XMPP_INTERNAL_MUC_DOMAIN: "internal-muc.__MEET_DOMAIN__"
+      XMPP_SERVER: "172.42.0.20"
+      JVB_AUTH_USER: jvb
+      JVB_AUTH_PASSWORD: ${JVB_AUTH_PASSWORD}
+      JVB_ADVERTISE_IPS: __EXTERNAL_IP__
+      JVB_WS_SERVER_ID: "172.42.0.23"
+      JVB_DISABLE_STUN: "true"
+      JVB_PORT: "10000"
+      COLIBRI_REST_ENABLED: "true"
+      JVB_OCTO_BIND_PORT: "0"
+    volumes:
+      - ${DATA_DIR}/jitsi/jvb/config:/config
+      - ${DATA_DIR}/jitsi/jvb/custom-jvb.conf:/defaults/custom-jvb.conf:ro
+      - ${DATA_DIR}/jitsi/jvb/custom-sip-communicator.properties:/defaults/custom-sip-communicator.properties:ro
+    depends_on:
+      - jitsi-prosody
+    labels:
+      net.unraid.docker.icon: "https://raw.githubusercontent.com/bmartino1/unraid-docker-templates/refs/heads/main/images/jitsi.png"
+      net.unraid.docker.managed: "composeman"

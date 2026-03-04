@@ -1,0 +1,99 @@
+# Synapse Configuration — matrix-textvoicevideo
+# Template: reference/homeserver.yaml
+# ALL __PLACEHOLDERS__ replaced by setup.sh at deploy time.
+
+server_name: "__SERVER_NAME__"
+public_baseurl: "__PUBLIC_URL__/"
+pid_file: /data/homeserver.pid
+serve_server_wellknown: true
+
+listeners:
+  - port: 8008
+    tls: false
+    type: http
+    x_forwarded: true
+    bind_addresses: ['0.0.0.0']
+    resources:
+      - names: [client, federation]
+        compress: false
+
+database:
+  name: psycopg2
+  args:
+    user: "__POSTGRES_USER__"
+    password: "__POSTGRES_PASSWORD__"
+    database: "__POSTGRES_DB__"
+    host: matrix-postgres
+    port: 5432
+    cp_min: 5
+    cp_max: 10
+
+redis:
+  enabled: true
+  host: matrix-valkey
+  port: 6379
+
+signing_key_path: "/data/__SERVER_NAME__.signing.key"
+log_config: "/data/__SERVER_NAME__.log.config"
+
+registration_shared_secret: "__SYNAPSE_REGISTRATION_SECRET__"
+macaroon_secret_key: "__SYNAPSE_MACAROON_KEY__"
+form_secret: "__SYNAPSE_FORM_SECRET__"
+
+media_store_path: /data/media_store
+max_upload_size: 100M
+url_preview_enabled: true
+url_preview_ip_range_blacklist:
+  - '127.0.0.0/8'
+  - '10.0.0.0/8'
+  - '172.16.0.0/12'
+  - '192.168.0.0/16'
+  - '100.64.0.0/10'
+  - '169.254.0.0/16'
+  - '::1/128'
+  - 'fe80::/10'
+  - 'fc00::/7'
+
+enable_registration: __ENABLE_REGISTRATION__
+enable_registration_without_verification: false
+
+report_stats: false
+trusted_key_servers: []
+allow_public_rooms_over_federation: false
+
+turn_uris:
+  # UDP first — works immediately, even with self-signed certs
+  - "turn:__TURN_DOMAIN__:3478?transport=udp"
+  - "turn:__TURN_DOMAIN__:3478?transport=tcp"
+  # TLS TURN — only works once you have a real (trusted) certificate
+  - "turns:__TURN_DOMAIN__:443?transport=tcp"
+turn_shared_secret: "__TURN_SECRET__"
+turn_user_lifetime: 1h
+turn_allow_guests: false
+
+rc_message:
+  per_second: 5
+  burst_count: 20
+rc_registration:
+  per_second: 0.1
+  burst_count: 3
+rc_login:
+  address:
+    per_second: 0.5
+    burst_count: 5
+  account:
+    per_second: 0.5
+    burst_count: 5
+
+password_config:
+  enabled: true
+  minimum_length: 10
+  require_digit: true
+  require_symbol: false
+  require_lowercase: true
+  require_uppercase: true
+
+caches:
+  global_factor: 1.0
+  per_cache_factors:
+    get_users_in_room: 2.0

@@ -1,0 +1,5 @@
+{
+  "m.homeserver": {
+    "base_url": "__PUBLIC_URL__"
+  }
+}
