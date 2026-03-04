@@ -1,56 +1,45 @@
 #!/usr/bin/env bash
-set -euo pipefail
-#
-# Deactivate a Matrix user account
-#
-# Usage:
-#   ./scripts/deactivate-user.sh <username> <admin-token> [--erase]
-#
-# --erase:
-#   Also permanently deletes the user's messages and personal data.
-#
-# Token:
-#   Element Web → Settings → Help & About → Access Token
-#
-source "$(dirname "$0")/load-env.sh"
+set -uo pipefail
+# Deactivate a user (disables login; data preserved).
+# Usage: ./scripts/deactivate-user.sh <username>
 
-USERNAME="${1:?Usage: $0 <username> <admin-token> [--erase]}"
-TOKEN="${2:?Usage: $0 <username> <admin-token> [--erase]}"
-ERASE=false
-[ "${3:-}" = "--erase" ] && ERASE=true
+source "$(dirname "$0")/load-token.sh"
 
-USER_ID="@${USERNAME}:${SERVER_NAME}"
+USERNAME="${1:?Usage: $0 <username>}"
+MXID="@${USERNAME}:${SERVER_NAME}"
 
-echo "Deactivating: ${USER_ID}"
-if [ "$ERASE" = "true" ]; then
-  echo "  (--erase: user data will be PERMANENTLY deleted)"
-fi
 echo ""
+echo "Deactivating: ${MXID}"
+echo "(This disables login. Data is preserved. Use delete-user.sh to remove entirely.)"
+echo ""
+read -r -p "  Erase user's messages from all rooms too? [no]: " ERASE
+if [[ "$ERASE" == "yes" || "$ERASE" == "y" ]]; then
+  ERASE_BOOL=true
+else
+  ERASE_BOOL=false
+fi
 
-if ! docker ps --format '{{.Names}}' | grep -q '^matrix-synapse$'; then
-  echo "ERROR: matrix-synapse container is not running."
-  echo "  Check: cd \"$PROJECT_DIR\" && docker compose ps"
+read -r -p "  Confirm deactivate ${MXID}? [yes/no]: " CONFIRM2
+if [[ "$CONFIRM2" != "yes" && "$CONFIRM2" != "y" ]]; then
+  echo "Aborted."
+  exit 0
+fi
+
+RESPONSE=$(docker exec matrix-synapse \
+  curl -s -X POST \
+    "http://localhost:8008/_synapse/admin/v1/deactivate/${MXID}" \
+    -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d "{\"erase\": ${ERASE_BOOL}}" \
+  2>&1) || { echo "✗ Failed to reach Synapse via docker exec."; exit 1; }
+
+if echo "$RESPONSE" | grep -q "id_server_unbind_result"; then
+  echo "✓ Deactivated: ${MXID}"
+  echo "  User can no longer log in."
+else
+  ERRMSG=$(echo "$RESPONSE" | python3 -c \
+    "import sys,json; d=json.load(sys.stdin); print(d.get('error', str(d)))" \
+    2>/dev/null || echo "$RESPONSE")
+  echo "✗ Failed: ${ERRMSG}"
   exit 1
 fi
-
-read -p "Are you sure? (y/N): " confirm
-[[ "$confirm" != "y" && "$confirm" != "Y" ]] && { echo "Aborted."; exit 0; }
-
-HTTP_CODE="$(docker exec -i matrix-synapse sh -lc "
-  curl -s -o /tmp/matrix-deact-resp.json -w '%{http_code}' -X POST \
-    -H 'Authorization: Bearer ${TOKEN}' \
-    -H 'Content-Type: application/json' \
-    -d '{\"erase\": ${ERASE}}' \
-    'http://localhost:8008/_synapse/admin/v1/deactivate/${USER_ID}'
-")"
-
-if [ "$HTTP_CODE" = "200" ]; then
-  echo "✓ ${USER_ID} deactivated."
-  [ "$ERASE" = "true" ] && echo "  User data erased from server."
-else
-  echo "✗ Failed (HTTP ${HTTP_CODE})."
-  echo ""
-  docker exec -i matrix-synapse sh -lc "cat /tmp/matrix-deact-resp.json 2>/dev/null || true"
-fi
-
-docker exec -i matrix-synapse sh -lc "rm -f /tmp/matrix-deact-resp.json" >/dev/null 2>&1 || true

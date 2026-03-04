@@ -1,48 +1,56 @@
 #!/usr/bin/env bash
 set -euo pipefail
-#
-# Create a Matrix user (optionally admin)
-#
-# Usage:
-#   ./scripts/create-user.sh <username> [--admin]
-#
+# Create a Matrix user on this homeserver.
+# Usage: ./scripts/create-user.sh <username> [--admin]
+
 source "$(dirname "$0")/load-env.sh"
 
-USERNAME="${1:?Usage: $0 <username> [--admin]}"
-ADMIN_FLAG=""
-if [ "${2:-}" = "--admin" ]; then
-  ADMIN_FLAG="--admin"
-  echo "Creating ADMIN user: @${USERNAME}:${SERVER_NAME}"
+USERNAME="${1:-}"
+IS_ADMIN=false
+[[ "${2:-}" == "--admin" ]] && IS_ADMIN=true
+
+[[ -z "$USERNAME" ]] && { echo "Usage: $0 <username> [--admin]"; exit 1; }
+
+MXID="@${USERNAME}:${SERVER_NAME}"
+
+if [[ "$IS_ADMIN" == true ]]; then
+  echo "Creating ADMIN user: ${MXID}"
 else
-  echo "Creating user: @${USERNAME}:${SERVER_NAME}"
+  echo "Creating user: ${MXID}"
 fi
-
 echo ""
-read -s -p "Password (min 10 chars): " PASSWORD; echo ""
-read -s -p "Confirm:               " PASSWORD2; echo ""
 
-if [ "$PASSWORD" != "$PASSWORD2" ]; then
-  echo "ERROR: Passwords do not match."
-  exit 1
-fi
-if [ ${#PASSWORD} -lt 10 ]; then
-  echo "ERROR: Password must be at least 10 characters."
-  exit 1
-fi
+# Read password
+while true; do
+  read -rs -p "Password (min 10 chars): " PASSWORD; echo ""
+  read -rs -p "Confirm:               " CONFIRM; echo ""
+  [[ "$PASSWORD" == "$CONFIRM" && ${#PASSWORD} -ge 10 ]] && break
+  echo "Passwords don't match or too short. Try again."
+done
 
-if ! docker ps --format '{{.Names}}' | grep -q '^matrix-synapse$'; then
-  echo "ERROR: matrix-synapse container is not running."
-  echo "  Check: cd \"$PROJECT_DIR\" && docker compose ps"
-  exit 1
+if [[ "$IS_ADMIN" != true ]]; then
+  read -r -p "Make admin [no]: " MAKE_ADMIN
+  [[ "$MAKE_ADMIN" == "yes" || "$MAKE_ADMIN" == "y" ]] && IS_ADMIN=true
 fi
 
-docker exec -i matrix-synapse register_new_matrix_user \
+echo "Sending registration request..."
+
+RESPONSE=$(docker exec matrix-synapse register_new_matrix_user \
+  -c /data/homeserver.yaml \
   -u "$USERNAME" \
   -p "$PASSWORD" \
-  -c /data/homeserver.yaml \
-  $ADMIN_FLAG \
-  http://localhost:8008
+  $( [[ "$IS_ADMIN" == true ]] && echo "-a" || echo "--no-admin" ) \
+  http://localhost:8008 2>&1) || true
 
-echo ""
-echo "✓ Created: @${USERNAME}:${SERVER_NAME}"
-[ -n "$ADMIN_FLAG" ] && echo "  (admin=true)"
+if echo "$RESPONSE" | grep -qi "success\|registered\|already"; then
+  echo "Success!"
+  echo ""
+  echo "✓ Created: ${MXID}"
+  [[ "$IS_ADMIN" == true ]] && echo "  (admin=true)"
+elif echo "$RESPONSE" | grep -qi "already in use\|already exists"; then
+  echo "✗ Username '${USERNAME}' already exists."
+  exit 1
+else
+  echo "✗ Registration failed: ${RESPONSE}"
+  exit 1
+fi

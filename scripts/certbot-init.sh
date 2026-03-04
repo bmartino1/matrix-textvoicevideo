@@ -1,113 +1,111 @@
 #!/usr/bin/env bash
-# =============================================================================
-#  certbot-init.sh — Initial TLS certificate issuance for Unraid
-#
-#  Unraid hosts its own web GUI on ports 80 and 443.
-#  Nginx in this stack uses host ports 60080 (HTTP) and 60443 (HTTPS).
-#  Your router should NAT:
-#    WAN :80  → Unraid IP :60080
-#    WAN :443 → Unraid IP :60443
-#
-#  Certbot's HTTP-01 challenge: Let's Encrypt hits YOUR_DOMAIN:80 from the
-#  internet → router forwards to :60080 on Unraid → certbot container bound
-#  to that port.  We achieve this with -p 60080:80 on the certbot container.
-# =============================================================================
 set -euo pipefail
+# Obtain a real Let's Encrypt certificate (standalone mode).
+# Run this AFTER the stack is up and DNS + port-forward are confirmed.
+#
+# Prerequisites:
+#   - DNS A records pointing to your WAN IP:
+#       YOUR_DOMAIN      → WAN IP
+#       meet.YOUR_DOMAIN → WAN IP
+#   - Router NAT: WAN:80 → Unraid:60080
+#   - Router NAT: WAN:443 → Unraid:60443
+#
+# NOTE: turn.YOUR_DOMAIN is optional. Free DDNS services (no-ip, duckdns, etc.)
+#       often do NOT support sub-subdomains like turn.yourdomain.ddns.net.
+#       If you only have a top-level DDNS hostname, omit turn.DOMAIN from the cert.
+#       Coturn will still work via SNI passthrough on port 443 using the main cert.
+#
+# What this script does:
+#   1. Stops matrix-nginx by container name (docker stop matrix-nginx)
+#   2. Runs certbot standalone on port 60080 (mapped from WAN:80)
+#   3. Fixes cert permissions so coturn can read them
+#   4. Starts matrix-nginx again (docker start matrix-nginx)
+#
+# Usage:
+#   ./scripts/certbot-init.sh
+#   ./scripts/certbot-init.sh --domains "chat.example.com meet.chat.example.com turn.chat.example.com"
 
-echo "=============================================="
-echo "  Let's Encrypt — Initial Certificate Issuance"
-echo "  (Unraid 60080/60443 topology)"
-echo "=============================================="
-echo ""
+source "$(dirname "$0")/load-env.sh"
 
-# ── Prompt for config ────────────────────────────────────────────────────────
-read -rp "Primary domain (e.g. example.com): " DOMAIN
-read -rp "Additional domain/subdomain (optional, press Enter to skip): " DOMAIN2
-read -rp "Admin email for Let's Encrypt notices: " EMAIL
+# Default: main domain + meet. only (turn. excluded for DDNS compatibility)
+DEFAULT_DOMAINS="-d ${SERVER_NAME} -d ${JITSI_DOMAIN}"
 
-# ── Paths ────────────────────────────────────────────────────────────────────
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DATA_DIR="${DATA_DIR:-$(dirname "$SCRIPT_DIR")/data}"
-CERTS="${DATA_DIR}/nginx/certs"
-WEBROOT="${DATA_DIR}/nginx/html"
-
-mkdir -p "$CERTS" "$WEBROOT"
-
-# ── Build -d flags ────────────────────────────────────────────────────────────
-DOMAIN_FLAGS="-d ${DOMAIN}"
-if [ -n "$DOMAIN2" ]; then
-    DOMAIN_FLAGS="${DOMAIN_FLAGS} -d ${DOMAIN2}"
-fi
-
-echo ""
-echo ">>> Checking that port 60080 is free..."
-if ss -tlnp 2>/dev/null | grep -q ':60080 ' || \
-   lsof -i:60080 >/dev/null 2>&1; then
-    echo "ERROR: Port 60080 is already in use."
-    echo "       Stop the nginx container first, then re-run this script."
-    exit 1
-fi
-
-# ── Stop nginx so certbot can bind 60080 ────────────────────────────────────
-echo ""
-echo ">>> Stopping nginx container (if running)..."
-NGINX_CONTAINER=$(docker ps --format '{{.Names}}' | grep -i 'nginx' | head -n1 || true)
-if [ -n "$NGINX_CONTAINER" ]; then
-    docker stop "$NGINX_CONTAINER"
-    echo "    Stopped: $NGINX_CONTAINER"
+# Build domain flags
+if [[ "${1:-}" == "--domains" ]]; then
+  RAW="${2:-}"
+  [[ -z "$RAW" ]] && { echo "Usage: $0 --domains \"d1.example.com d2.example.com\""; exit 1; }
+  DOMAINS=""
+  for D in $RAW; do DOMAINS="$DOMAINS -d $D"; done
 else
-    echo "    nginx not running — OK."
+  DOMAINS="$DEFAULT_DOMAINS"
 fi
 
-# ── Issue certificate (standalone, bound to host :60080) ────────────────────
+echo "═══════════════════════════════════════════════════════════════"
+echo "  Certbot — Let's Encrypt Certificate Issuance"
+echo "  Domain:      ${SERVER_NAME}"
+echo "  Meet domain: ${JITSI_DOMAIN}"
+echo "  Email:       ${ADMIN_EMAIL}"
 echo ""
-echo ">>> Requesting certificate from Let's Encrypt..."
-echo "    Domain(s): ${DOMAIN_FLAGS}"
-echo "    Email    : ${EMAIL}"
+echo "  NOTE: turn.${SERVER_NAME} is NOT included by default."
+echo "  Free DDNS services usually don't support sub-subdomains."
+echo "  Coturn works fine using the main cert via nginx SNI passthrough."
+echo "  To include it: $0 --domains \"${SERVER_NAME} ${JITSI_DOMAIN} turn.${SERVER_NAME}\""
+echo "═══════════════════════════════════════════════════════════════"
+echo ""
+echo "  This will:"
+echo "   1. Stop matrix-nginx briefly (docker stop matrix-nginx)"
+echo "   2. Run certbot on port 60080 (WAN:80 → Unraid:60080)"
+echo "   3. Fix cert permissions for coturn"
+echo "   4. Start matrix-nginx again (docker start matrix-nginx)"
+echo ""
+echo "  NOTE for Unraid users: if certbot fails to bind port 60080,"
+echo "  manually stop matrix-nginx in the Unraid Docker UI first,"
+echo "  then re-run this script."
+echo ""
+read -r -p "  Continue? [yes/no]: " CONFIRM
+[[ "$CONFIRM" != "yes" && "$CONFIRM" != "y" ]] && { echo "Aborted."; exit 0; }
 echo ""
 
+echo "Stopping matrix-nginx..."
+docker stop matrix-nginx 2>/dev/null \
+  && echo "  Stopped." \
+  || echo "  matrix-nginx was not running — continuing."
+sleep 2
+
+echo ""
+echo "Running certbot (standalone)..."
 # shellcheck disable=SC2086
 docker run --rm \
-    -p 60080:80 \
-    -v "${CERTS}:/etc/letsencrypt" \
-    -v "${WEBROOT}:/var/www/certbot" \
-    certbot/certbot certonly \
-        --standalone \
-        --http-01-port 80 \
-        --preferred-challenges http \
-        ${DOMAIN_FLAGS} \
-        --email "${EMAIL}" \
-        --agree-tos \
-        --no-eff-email \
-        --rsa-key-size 4096
-
-# ── Restart nginx ─────────────────────────────────────────────────────────────
-echo ""
-echo ">>> Restarting nginx..."
-if [ -n "$NGINX_CONTAINER" ]; then
-    docker start "$NGINX_CONTAINER"
-    echo "    Started: $NGINX_CONTAINER"
-else
-    # Try to find it even if it was stopped before we ran
-    NGINX_CONTAINER=$(docker ps -a --format '{{.Names}}' | grep -i 'nginx' | head -n1 || true)
-    if [ -n "$NGINX_CONTAINER" ]; then
-        docker start "$NGINX_CONTAINER"
-        echo "    Started: $NGINX_CONTAINER"
-    else
-        echo "    No nginx container found — start your stack manually."
-    fi
-fi
+  -v "${DATA_DIR}/nginx/certs:/etc/letsencrypt" \
+  -v "${DATA_DIR}/nginx/html:/var/www/certbot" \
+  -p "60080:80" \
+  certbot/certbot certonly \
+    --standalone \
+    --http-01-port 80 \
+    --preferred-challenges http \
+    $DOMAINS \
+    -m "${ADMIN_EMAIL}" \
+    --agree-tos \
+    --non-interactive
 
 echo ""
-echo "=============================================="
-echo "  SUCCESS!"
-echo "  Certificate stored at:"
-echo "    ${CERTS}/live/${DOMAIN}/"
+echo "Fixing cert permissions for coturn..."
+chmod -R 750 "${DATA_DIR}/nginx/certs/live/"    2>/dev/null || true
+chmod -R 750 "${DATA_DIR}/nginx/certs/archive/" 2>/dev/null || true
+find "${DATA_DIR}/nginx/certs/archive/" -name "*.pem" -exec chmod 640 {} \; 2>/dev/null || true
+echo "  Done."
+
 echo ""
-echo "  Files:"
-echo "    fullchain.pem  — certificate + chain"
-echo "    privkey.pem    — private key"
+echo "Starting matrix-nginx..."
+docker start matrix-nginx 2>/dev/null \
+  && echo "  Started." \
+  || echo "  Warning: could not start matrix-nginx — start it manually in Unraid Docker UI."
+sleep 3
+
 echo ""
-echo "  Next: run certbot-renew.sh periodically"
-echo "        (or use a cron job / User Script in Unraid)"
-echo "=============================================="
+echo "✓ Certificate obtained, permissions fixed, nginx restarted."
+echo ""
+echo "  Verify TLS at: https://${SERVER_NAME}"
+echo "  Run again to renew, or use: ./scripts/certbot-renew.sh"
+echo "  After getting a real cert, run: ./scripts/status.sh"
+echo ""

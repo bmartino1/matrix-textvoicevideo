@@ -1,61 +1,41 @@
 #!/usr/bin/env bash
-set -euo pipefail
-#
-# Reset a Matrix user's password via Synapse Admin API
-#
-# Usage:
-#   ./scripts/reset-password.sh <username> <admin-access-token>
-#
-# Token:
-#   Element Web → Settings → Help & About → Access Token
-#
-source "$(dirname "$0")/load-env.sh"
+set -uo pipefail
+# Reset a user's password and log out all their sessions.
+# Usage: ./scripts/reset-password.sh <username>
 
-USERNAME="${1:?Usage: $0 <username> <admin-access-token>}"
-TOKEN="${2:?Usage: $0 <username> <admin-access-token>}"
-USER_ID="@${USERNAME}:${SERVER_NAME}"
+source "$(dirname "$0")/load-token.sh"
 
-echo "Resetting password for: ${USER_ID}"
+USERNAME="${1:?Usage: $0 <username>}"
+MXID="@${USERNAME}:${SERVER_NAME}"
+
+echo ""
+echo "Resetting password for: ${MXID}"
 echo ""
 
-if ! docker ps --format '{{.Names}}' | grep -q '^matrix-synapse$'; then
-  echo "ERROR: matrix-synapse container is not running."
-  echo "  Check: cd \"$PROJECT_DIR\" && docker compose ps"
-  exit 1
-fi
+while true; do
+  read -rs -p "New password (min 10 chars): " NEW_PASS; echo ""
+  read -rs -p "Confirm:                     " CONFIRM_PW; echo ""
+  if [[ "$NEW_PASS" == "$CONFIRM_PW" && ${#NEW_PASS} -ge 10 ]]; then
+    break
+  fi
+  echo "Passwords don't match or too short. Try again."
+done
 
-read -s -p "New password: " PASSWORD; echo ""
-read -s -p "Confirm:      " PASSWORD2; echo ""
+RESPONSE=$(docker exec matrix-synapse \
+  curl -s -X POST \
+    "http://localhost:8008/_synapse/admin/v1/reset_password/${MXID}" \
+    -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d "{\"new_password\": \"${NEW_PASS}\", \"logout_devices\": true}" \
+  2>&1) || { echo "✗ Failed to reach Synapse via docker exec."; exit 1; }
 
-if [ "$PASSWORD" != "$PASSWORD2" ]; then
-  echo "ERROR: Passwords do not match."
-  exit 1
-fi
-if [ ${#PASSWORD} -lt 10 ]; then
-  echo "ERROR: Password must be at least 10 characters."
-  exit 1
-fi
-
-HTTP_CODE="$(docker exec -i matrix-synapse sh -lc "
-  curl -s -o /tmp/matrix-reset-resp.json -w '%{http_code}' -X POST \
-    -H 'Authorization: Bearer ${TOKEN}' \
-    -H 'Content-Type: application/json' \
-    -d '{\"new_password\":\"${PASSWORD}\",\"logout_devices\":true}' \
-    'http://localhost:8008/_synapse/admin/v1/reset_password/${USER_ID}'
-")"
-
-if [ "$HTTP_CODE" = "200" ]; then
-  echo "✓ Password reset for ${USER_ID}."
-  echo "  All existing sessions have been logged out."
+if echo "$RESPONSE" | grep -q "{}"; then
+  echo "✓ Password reset for ${MXID} — all sessions logged out."
 else
-  echo "✗ Failed (HTTP ${HTTP_CODE})."
-  echo ""
-  docker exec -i matrix-synapse sh -lc "cat /tmp/matrix-reset-resp.json 2>/dev/null || true"
-  echo ""
-  echo "Common causes:"
-  echo "  • Admin token expired"
-  echo "  • Username doesn't exist"
-  echo "  • Synapse not running"
+  ERRMSG=$(echo "$RESPONSE" | python3 -c \
+    "import sys,json; d=json.load(sys.stdin); print(d.get('error', str(d)))" \
+    2>/dev/null || echo "$RESPONSE")
+  echo "✗ Failed: ${ERRMSG}"
+  echo "  Re-run: ./scripts/get-admin-token.sh"
+  exit 1
 fi
-
-docker exec -i matrix-synapse sh -lc "rm -f /tmp/matrix-reset-resp.json" >/dev/null 2>&1 || true
