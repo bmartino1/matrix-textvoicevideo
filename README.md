@@ -1,3 +1,11 @@
+Docker networks get in way on how to secure and setup with RP... Public Archiving. More porrf of concept...
+
+2nds release was last known good tested that had meet and udp ports port forwarded...
+https://github.com/bmartino1/matrix-textvoicevideo/releases/tag/Produxtion-v1
+
+Wth a change to use pve lxc (got secure and working) and a rewrite of a lxc on unraid(wip) I decided to abanded this type of setup.
+
+
 # Matrix-TextVoiceVideo
 
 **A self-hosted, Discord-like alternative for secure text, voice, and video chat.**
